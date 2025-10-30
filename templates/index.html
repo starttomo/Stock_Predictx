@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>沪深300 量化分析系统</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        /* 交易相关样式 */
+        .trade-tabs { display: flex; margin-bottom: 15px; }
+        .tab-btn {
+            padding: 8px 16px;
+            background: #f1f5f9;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            margin-right: 5px;
+        }
+        .tab-btn.active { background: #1e40af; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .trade-form { display: flex; gap: 10px; flex-wrap: wrap; }
+        .trade-form input { flex: 1; min-width: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; }
+        .btn-buy { background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
+        .btn-sell { background: #16a34a; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
+        .btn-buy:hover { background: #b91c1c; }
+        .btn-sell:hover { background: #15803d; }
+
+        .btn-strategy, .btn-forecast {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            width: calc(50% - 10px);
+        }
+        .btn-strategy:hover, .btn-forecast:hover { background: #6d28d9; }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background: white;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 800px;
+            position: relative;
+        }
+        .close {
+            float: right;
+            font-size: 28px;
+            cursor: pointer;
+            color: #aaa;
+        }
+        .close:hover { color: #000; }
+
+        #order-result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success-message { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+        .error-message { background: #fee2e2; color: #dc2626; border: 1px solid #ef4444; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>沪深300 量化分析系统</h1>
+        <div class="user-info">
+            <span>欢迎, {{ current_user.username }}</span>
+            <a href="{{ url_for('profile') }}">个人中心</a>
+            <a href="{{ url_for('logout') }}">登出</a>
+        </div>
+    </div>
+
+    <div class="main-layout">
+        <!-- 左侧：K线图 -->
+        <div class="chart-panel">
+            <div class="chart-header">
+                <h2>最新收盘价: <span id="current-price">{{ "%.2f"|format(current_price) }}</span></h2>
+                <select id="timeframe" onchange="changeTimeframe()">
+                    <option value="day">日线</option>
+                    <option value="week">周线</option>
+                    <option value="month">月线</option>
+                </select>
+            </div>
+            <div id="chart" style="height: 600px; width: 100%;"></div>
+        </div>
+
+        <!-- 右侧：操作面板 -->
+        <div class="control-panel">
+            <div class="section">
+                <h3>技术指标</h3>
+                <label><input type="checkbox" checked onchange="toggleSeries('MA7')"> MA7</label>
+                <label><input type="checkbox" checked onchange="toggleSeries('MA30')"> MA30</label>
+                <label><input type="checkbox" checked onchange="toggleSeries('BOLL')"> BOLL</label>
+            </div>
+
+            <div class="section">
+                <h3>量化分析与策略</h3>
+                <div id="analysis-report">{{ analysis|safe }}</div>
+                <button onclick="generateStrategy()" class="btn-strategy">生成交易策略</button>
+                <button onclick="showForecast()" class="btn-forecast">查看未来预测</button>
+                <div id="strategy-result" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; display: none;"></div>
+            </div>
+
+            <!-- 改进的交易面板 -->
+            <div class="section">
+                <h3>模拟交易</h3>
+                <div class="trade-tabs">
+                    <button class="tab-btn active" onclick="openTab('market-tab')">市价单</button>
+                    <button class="tab-btn" onclick="openTab('limit-tab')">限价单</button>
+                </div>
+
+                <!-- 市价单 -->
+                <div id="market-tab" class="tab-content active">
+                    <div class="trade-form">
+                        <input type="number" id="market-quantity" placeholder="股数" min="100" step="100">
+                        <button onclick="buyOrder()" class="btn-buy">买入</button>
+                        <button onclick="sellOrder()" class="btn-sell">卖出</button>
+                    </div>
+                </div>
+
+                <!-- 限价单 -->
+                <div id="limit-tab" class="tab-content">
+                    <div class="trade-form">
+                        <input type="number" id="limit-price" placeholder="价格" step="0.01">
+                        <input type="number" id="limit-quantity" placeholder="股数" min="100" step="100">
+                        <button onclick="buyOrder()" class="btn-buy">买入</button>
+                        <button onclick="sellOrder()" class="btn-sell">卖出</button>
+                    </div>
+                </div>
+
+                <div id="order-result"></div>
+            </div>
+
+            <!-- 持仓信息 -->
+            <div class="section">
+                <h3>持仓信息</h3>
+                <div id="portfolio-info">
+                    <p>加载中...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 预测模态框 -->
+<div id="forecast-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeForecastModal()">×</span>
+        <h3>未来5日价格预测</h3>
+        <div id="forecast-chart" style="height: 400px;"></div>
+        <div id="forecast-table" style="margin-top: 20px;"></div>
+    </div>
+</div>
+
+<script>
+// === 数据准备 ===
+const rawData = {{ data|tojson }};
+let data = rawData.map(d => ({
+    ...d,
+    date: new Date(d.date),
+    ma7: d.ma7 ? parseFloat(d.ma7) : null,
+    ma30: d.ma30 ? parseFloat(d.ma30) : null,
+    upper: d.upper ? parseFloat(d.upper) : null,
+    mid: d.mid ? parseFloat(d.mid) : null,
+    lower: d.lower ? parseFloat(d.lower) : null
+}));
+
+// === ECharts 初始化 ===
+const chart = echarts.init(document.getElementById('chart'));
+let timeframe = 'day';
+
+// === 切换时间周期 ===
+function changeTimeframe() {
+    timeframe = document.getElementById('timeframe').value;
+    renderChart();
+}
+
+// === 渲染图表 ===
+function renderChart() {
+    let grouped = {};
+    data.forEach(d => {
+        let key, open, high, low, close;
+        if (timeframe === 'day') {
+            key = d.date.toISOString().split('T')[0];
+            open = d.open; high = d.high; low = d.low; close = d.close;
+        } else if (timeframe === 'week') {
+            const week = Math.ceil(d.date.getDate() / 7);
+            key = `${d.date.getFullYear()}-W${week}`;
+            if (!grouped[key]) grouped[key] = { o: d.open, h: d.high, l: d.low, c: d.close };
+            else {
+                grouped[key].h = Math.max(grouped[key].h, d.high);
+                grouped[key].l = Math.min(grouped[key].l, d.low);
+                grouped[key].c = d.close;
+            }
+            return;
+        } else {
+            key = `${d.date.getFullYear()}-${d.date.getMonth() + 1}`;
+            if (!grouped[key]) grouped[key] = { o: d.open, h: d.high, l: d.low, c: d.close };
+            else {
+                grouped[key].h = Math.max(grouped[key].h, d.high);
+                grouped[key].l = Math.min(grouped[key].l, d.low);
+                grouped[key].c = d.close;
+            }
+            return;
+        }
+        if (!grouped[key]) grouped[key] = { o: open, h: high, l: low, c: close };
+        else {
+            grouped[key].h = Math.max(grouped[key].h, high);
+            grouped[key].l = Math.min(grouped[key].l, low);
+            grouped[key].c = close;
+        }
+    });
+
+    const dates = Object.keys(grouped);
+    const kdata = dates.map(k => [grouped[k].o, grouped[k].c, grouped[k].l, grouped[k].h]);
+
+    const ma7 = [], ma30 = [], boll = { upper: [], mid: [], lower: [] };
+    data.forEach(d => {
+        const idx = dates.indexOf(d.date.toISOString().split('T')[0]);
+        if (idx !== -1) {
+            ma7[idx] = d.ma7;
+            ma30[idx] = d.ma30;
+            boll.upper[idx] = d.upper;
+            boll.mid[idx] = d.mid;
+            boll.lower[idx] = d.lower;
+        }
+    });
+
+    chart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['K线', 'MA7', 'MA30', 'BOLL上轨', 'BOLL中轨', 'BOLL下轨'] },
+        xAxis: { type: 'category', data: dates },
+        yAxis: { type: 'value' },
+        dataZoom: [{ type: 'inside' }, { type: 'slider' }],
+        series: [
+            { name: 'K线', type: 'candlestick', data: kdata },
+            { name: 'MA7', type: 'line', data: ma7, lineStyle: { color: '#ff9900' }, showSymbol: false },
+            { name: 'MA30', type: 'line', data: ma30, lineStyle: { color: '#3399ff' }, showSymbol: false },
+            { name: 'BOLL上轨', type: 'line', data: boll.upper, lineStyle: { color: '#c23531' }, showSymbol: false },
+            { name: 'BOLL中轨', type: 'line', data: boll.mid, lineStyle: { color: '#2f4554' }, showSymbol: false },
+            { name: 'BOLL下轨', type: 'line', data: boll.lower, lineStyle: { color: '#61a0a8' }, showSymbol: false }
+        ]
+    }, true);
+}
+
+// === 开关指标 ===
+function toggleSeries(name) {
+    const checked = event.target.checked;
+    chart.dispatchAction({
+        type: checked ? 'legendSelect' : 'legendUnSelect',
+        name: name
+    });
+}
+
+// === 交易功能 ===
+async function placeOrder(direction, orderType) {
+    let quantity, price;
+
+    if (direction === 'BUY') {
+        if (orderType === 'MARKET') {
+            quantity = parseInt(document.getElementById('market-quantity').value);
+            price = null;
+        } else {
+            quantity = parseInt(document.getElementById('limit-quantity').value);
+            price = parseFloat(document.getElementById('limit-price').value);
+        }
+    } else { // SELL
+        orderType = 'MARKET';
+        quantity = parseInt(document.getElementById('market-quantity').value) ||
+                   parseInt(document.getElementById('limit-quantity').value);
+        price = null;
+    }
+
+    if (!quantity || quantity % 100 !== 0) {
+        alert('请输入正确的股数（100的倍数）');
+        return;
+    }
+
+    if (orderType === 'LIMIT' && (!price || price <= 0)) {
+        alert('请输入有效的限价价格');
+        return;
+    }
+
+    try {
+        const response = await fetch('/place_order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                direction: direction,
+                order_type: orderType,
+                quantity: quantity,
+                price: price
+            })
+        });
+
+        const result = await response.json();
+        const resultDiv = document.getElementById('order-result');
+
+        if (result.success) {
+            resultDiv.innerHTML = `<div class="success-message">${result.message}</div>`;
+            // 清空输入框
+            document.getElementById('market-quantity').value = '';
+            document.getElementById('limit-quantity').value = '';
+            document.getElementById('limit-price').value = '';
+            // 更新持仓信息
+            updatePortfolio();
+        } else {
+            resultDiv.innerHTML = `<div class="error-message">${result.message}</div>`;
+        }
+    } catch (error) {
+        alert('交易失败: ' + error);
+    }
+}
+
+// 修改按钮点击事件
+function buyOrder() {
+    const activeTab = document.querySelector('.tab-content.active').id;
+    const orderType = activeTab === 'market-tab' ? 'MARKET' : 'LIMIT';
+    placeOrder('BUY', orderType);
+}
+
+function sellOrder() {
+    placeOrder('SELL', 'MARKET');
+}
+
+// === 持仓信息 ===
+async function updatePortfolio() {
+    try {
+        const response = await fetch('/portfolio');
+        const portfolio = await response.json();
+
+        const portfolioDiv = document.getElementById('portfolio-info');
+        portfolioDiv.innerHTML = `
+            <p><strong>现金:</strong> ￥${portfolio.cash.toFixed(2)}</p>
+            <p><strong>持仓:</strong> ${portfolio.position} 股</p>
+            <p><strong>股票市值:</strong> ￥${portfolio.stock_value.toFixed(2)}</p>
+            <p><strong>总资产:</strong> ￥${portfolio.total_value.toFixed(2)}</p>
+            <p><strong>当前价格:</strong> ￥${portfolio.current_price.toFixed(2)}</p>
+        `;
+    } catch (error) {
+        console.error('更新持仓失败:', error);
+    }
+}
+
+// === 标签页切换 ===
+function openTab(tabName) {
+    const tabContents = document.getElementsByClassName('tab-content');
+    const tabButtons = document.getElementsByClassName('tab-btn');
+
+    for (let i = 0; i < tabContents.length; i++) {
+        tabContents[i].classList.remove('active');
+        tabButtons[i].classList.remove('active');
+    }
+
+    document.getElementById(tabName).classList.add('active');
+    event.currentTarget.classList.add('active');
+}
+
+// === 策略和预测功能 ===
+async function generateStrategy() {
+    try {
+        const response = await fetch('/get_analysis');
+        const data = await response.json();
+        const strategyDiv = document.getElementById('strategy-result');
+        strategyDiv.innerHTML = data.analysis;
+        strategyDiv.style.display = 'block';
+    } catch (error) {
+        alert('生成策略失败: ' + error);
+    }
+}
+
+async function showForecast() {
+    try {
+        const response = await fetch('/get_forecast');
+        const data = await response.json();
+        renderForecastChart(data.future_data);
+        renderForecastTable(data.future_data);
+        document.getElementById('forecast-modal').style.display = 'block';
+    } catch (error) {
+        alert('获取预测失败: ' + error);
+    }
+}
+
+function renderForecastChart(forecastData) {
+    const forecastChart = echarts.init(document.getElementById('forecast-chart'));
+    const dates = forecastData.map(d => d.date);
+    const yhat = forecastData.map(d => d.yhat);
+    const yhatLower = forecastData.map(d => d.yhat_lower);
+    const yhatUpper = forecastData.map(d => d.yhat_upper);
+
+    forecastChart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['预测价格', '置信区间'] },
+        xAxis: { type: 'category', data: dates },
+        yAxis: { type: 'value' },
+        series: [
+            {
+                name: '预测价格',
+                type: 'line',
+                data: yhat,
+                lineStyle: { color: '#1890ff' },
+                itemStyle: { color: '#1890ff' }
+            },
+            {
+                name: '置信区间',
+                type: 'line',
+                data: yhatUpper,
+                lineStyle: { opacity: 0 },
+                areaStyle: {
+                    color: 'rgba(24, 144, 255, 0.3)'
+                }
+            },
+            {
+                name: '置信区间',
+                type: 'line',
+                data: yhatLower,
+                lineStyle: { opacity: 0 },
+                areaStyle: {
+                    color: 'rgba(24, 144, 255, 0.3)'
+                }
+            }
+        ]
+    });
+}
+
+function renderForecastTable(forecastData) {
+    let tableHtml = `
+        <table style="width:100%; border-collapse: collapse; margin-top: 20px;">
+            <tr style="background: #1e40af; color: white;">
+                <th style="padding: 10px; text-align: left;">日期</th>
+                <th style="padding: 10px; text-align: left;">预测价格</th>
+                <th style="padding: 10px; text-align: left;">置信下限</th>
+                <th style="padding: 10px; text-align: left;">置信上限</th>
+            </tr>
+    `;
+
+    forecastData.forEach(item => {
+        tableHtml += `
+            <tr style="border-bottom: 1px solid #ddd;">
+                <td style="padding: 10px;">${item.date}</td>
+                <td style="padding: 10px; color: #1890ff; font-weight: bold;">${item.yhat.toFixed(2)}</td>
+                <td style="padding: 10px; color: #52c41a;">${item.yhat_lower.toFixed(2)}</td>
+                <td style="padding: 10px; color: #f5222d;">${item.yhat_upper.toFixed(2)}</td>
+            </tr>
+        `;
+    });
+
+    tableHtml += '</table>';
+    document.getElementById('forecast-table').innerHTML = tableHtml;
+}
+
+function closeForecastModal() {
+    document.getElementById('forecast-modal').style.display = 'none';
+}
+
+// === 页面初始化 ===
+document.addEventListener('DOMContentLoaded', function() {
+    updatePortfolio();
+    // 每30秒自动更新持仓
+    setInterval(updatePortfolio, 30000);
+});
+
+// 初始化图表
+renderChart();
+</script>
+</body>
+</html>

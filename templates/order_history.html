@@ -1,0 +1,64 @@
+<!-- templates/order_history.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>订单历史</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .order-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        .order-table th, .order-table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .order-table th { background: #1e40af; color: white; }
+        .status-filled { color: #16a34a; }
+        .status-pending { color: #d97706; }
+        .status-cancelled { color: #6b7280; }
+        .buy-order { color: #dc2626; }
+        .sell-order { color: #16a34a; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>订单历史</h1>
+        <div class="user-info">
+            <a href="{{ url_for('index') }}">返回交易</a>
+            <a href="{{ url_for('profile') }}">个人中心</a>
+        </div>
+    </div>
+
+    <table class="order-table">
+        <thead>
+            <tr>
+                <th>订单时间</th>
+                <th>类型</th>
+                <th>价格</th>
+                <th>数量</th>
+                <th>金额</th>
+                <th>状态</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for trade in trades %}
+            <tr>
+                <td>{{ trade.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="{{ 'buy-order' if trade.order_type == 'market' else 'sell-order' }}">
+                    {{ '买入' if trade.order_type == 'market' else '限价' }}
+                </td>
+                <td>{{ "%.2f"|format(trade.buy_price) if trade.buy_price else '-' }}</td>
+                <td>{{ trade.quantity }}</td>
+                <td>
+                    {% if trade.buy_price %}
+                        {{ "%.2f"|format(trade.buy_price * trade.quantity) }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td class="status-{{ trade.status }}">
+                    {{ '已成交' if trade.status == 'filled' else '待成交' if trade.status == 'pending' else '已取消' }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+</body>
+</html>
