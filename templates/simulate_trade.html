@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>模拟交易</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        /* 交易相关样式 */
+        .trade-tabs { display: flex; margin-bottom: 15px; }
+        .tab-btn {
+            padding: 8px 16px;
+            background: #f1f5f9;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            margin-right: 5px;
+        }
+        .tab-btn.active { background: #1e40af; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .trade-form { display: flex; gap: 10px; flex-wrap: wrap; }
+        .trade-form input { flex: 1; min-width: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; }
+        .trade-form { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn-submit { background: #1e40af; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; width: 100%; }
+        .btn-submit:hover { background: #1e3a8a; }
+        .btn-strategy, .btn-forecast {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            width: calc(50% - 10px);
+        }
+        .btn-strategy:hover, .btn-forecast:hover { background: #6d28d9; }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background: white;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 800px;
+            position: relative;
+        }
+        .close {
+            float: right;
+            font-size: 28px;
+            cursor: pointer;
+            color: #aaa;
+        }
+        .close:hover { color: #000; }
+
+        #order-result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success-message { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+        .error-message { background: #fee2e2; color: #dc2626; border: 1px solid #ef4444; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>模拟交易</h1>
+        <a href="{{ url_for('index') }}">返回主页</a>
+    </div>
+
+    <div class="main-layout">
+        <!-- 左侧：K线图 -->
+        <div class="chart-panel">
+            <div class="chart-header">
+                <h2>历史 K 线</h2>
+            </div>
+            <div id="chart" style="height: 600px; width: 100%;"></div>
+        </div>
+
+        <!-- 右侧：交易操作 -->
+        <div class="control-panel">
+            <div class="section">
+                <h3>预测指导</h3>
+                <input type="date" id="predict-start-date" placeholder="起始日期">
+                <input type="date" id="predict-end-date" placeholder="结束日期">
+                <button onclick="getPredictGuide()" class="btn-strategy">获取预测指导</button>
+                <div id="predict-guide-result" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="section">
+                <h3>挂单设置</h3>
+                <select id="order-side">
+                    <option value="buy">买入</option>
+                    <option value="sell">卖出</option>
+                </select>
+                <select id="order-type">
+                    <option value="market">市价</option>
+                    <option value="limit">限价</option>
+                </select>
+                <input type="date" id="order-date" placeholder="挂单日期">
+                <input type="number" id="order-price" placeholder="价格 (限价必填)" step="0.01">
+                <input type="number" id="order-quantity" placeholder="股数" min="100" step="100">
+                <input type="number" id="stop-loss" placeholder="止损价格 (可选)" step="0.01">
+                <input type="number" id="take-profit" placeholder="止盈价格 (可选)" step="0.01">
+                <input type="date" id="close-date" placeholder="平仓日期 (可选)">
+                <button onclick="submitOrder()" class="btn-submit">开始交易</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 交易结果模态框 -->
+<div id="trade-result-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal()">×</span>
+        <h3>交易结果</h3>
+        <div id="trade-chart" style="height: 400px;"></div>
+        <div id="trade-info" style="margin-top: 20px;"></div>
+    </div>
+</div>
+
+<script>
+// === 数据准备 ===
+const rawData = {{ data|tojson }};
+let data = rawData.map(d => ({
+    ...d,
+    date: new Date(d.date),
+    ma7: d.ma7 ? parseFloat(d.ma7) : null,
+    ma30: d.ma30 ? parseFloat(d.ma30) : null,
+    upper: d.upper ? parseFloat(d.upper) : null,
+    mid: d.mid ? parseFloat(d.mid) : null,
+    lower: d.lower ? parseFloat(d.lower) : null
+}));
+
+// === 时间框架设置 ===
+const timeframe = 'day'; // 设置为日线图
+
+// === ECharts 初始化 ===
+let chart;
+
+// === 页面加载完成后初始化 ===
+document.addEventListener('DOMContentLoaded', function() {
+    chart = echarts.init(document.getElementById('chart'));
+    renderChart();
+});
+
+// === 渲染图表 ===
+function renderChart() {
+    let grouped = {};
+    data.forEach(d => {
+        let key, open, high, low, close;
+        if (timeframe === 'day') {
+            key = d.date.toISOString().split('T')[0];
+            open = d.open; high = d.high; low = d.low; close = d.close;
+        } else if (timeframe === 'week') {
+            const week = Math.ceil(d.date.getDate() / 7);
+            key = `${d.date.getFullYear()}-W${week}`;
+            if (!grouped[key]) grouped[key] = { o: d.open, h: d.high, l: d.low, c: d.close };
+            else {
+                grouped[key].h = Math.max(grouped[key].h, d.high);
+                grouped[key].l = Math.min(grouped[key].l, d.low);
+                grouped[key].c = d.close;
+            }
+            return;
+        } else {
+            key = `${d.date.getFullYear()}-${d.date.getMonth() + 1}`;
+            if (!grouped[key]) grouped[key] = { o: d.open, h: d.high, l: d.low, c: d.close };
+            else {
+                grouped[key].h = Math.max(grouped[key].h, d.high);
+                grouped[key].l = Math.min(grouped[key].l, d.low);
+                grouped[key].c = d.close;
+            }
+            return;
+        }
+        if (!grouped[key]) grouped[key] = { o: open, h: high, l: low, c: close };
+        else {
+            grouped[key].h = Math.max(grouped[key].h, high);
+            grouped[key].l = Math.min(grouped[key].l, low);
+            grouped[key].c = close;
+        }
+    });
+
+    const dates = Object.keys(grouped);
+    const kdata = dates.map(k => [grouped[k].o, grouped[k].c, grouped[k].l, grouped[k].h]);
+
+    const ma7 = [], ma30 = [], boll = { upper: [], mid: [], lower: [] };
+    data.forEach(d => {
+        const idx = dates.indexOf(d.date.toISOString().split('T')[0]);
+        if (idx !== -1) {
+            ma7[idx] = d.ma7;
+            ma30[idx] = d.ma30;
+            boll.upper[idx] = d.upper;
+            boll.mid[idx] = d.mid;
+            boll.lower[idx] = d.lower;
+        }
+    });
+
+    chart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['K线', 'MA7', 'MA30', 'BOLL上轨', 'BOLL中轨', 'BOLL下轨'] },
+        xAxis: { type: 'category', data: dates },
+        yAxis: { type: 'value' },
+        dataZoom: [{ type: 'inside' }, { type: 'slider' }],
+        series: [
+            { name: 'K线', type: 'candlestick', data: kdata },
+            { name: 'MA7', type: 'line', data: ma7, lineStyle: { color: '#ff9900' }, showSymbol: false },
+            { name: 'MA30', type: 'line', data: ma30, lineStyle: { color: '#3399ff' }, showSymbol: false },
+            { name: 'BOLL上轨', type: 'line', data: boll.upper, lineStyle: { color: '#c23531' }, showSymbol: false },
+            { name: 'BOLL中轨', type: 'line', data: boll.mid, lineStyle: { color: '#2f4554' }, showSymbol: false },
+            { name: 'BOLL下轨', type: 'line', data: boll.lower, lineStyle: { color: '#61a0a8' }, showSymbol: false }
+        ]
+    }, true);
+}
+
+// === 预测指导函数 - 添加错误处理 ===
+async function getPredictGuide() {
+    try {
+        const start = document.getElementById('predict-start-date').value;
+        const end = document.getElementById('predict-end-date').value;
+        if (!start || !end) {
+            alert('请选择起始和结束日期');
+            return;
+        }
+        
+        const response = await fetch('/predict_guide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start, end })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            document.getElementById('predict-guide-result').innerHTML = result.guide;
+        } else {
+            document.getElementById('predict-guide-result').innerHTML = 
+                `<div class="error-message">${result.message}</div>`;
+        }
+    } catch (error) {
+        console.error('获取预测指导失败:', error);
+        document.getElementById('predict-guide-result').innerHTML = 
+            `<div class="error-message">网络错误，请重试</div>`;
+    }
+}
+
+// === 提交订单函数 - 添加错误处理 ===
+async function submitOrder() {
+    try {
+        const side = document.getElementById('order-side').value;
+        const type = document.getElementById('order-type').value;
+        const date = document.getElementById('order-date').value;
+        const price = parseFloat(document.getElementById('order-price').value) || null;
+        const quantity = parseInt(document.getElementById('order-quantity').value);
+        const stopLoss = parseFloat(document.getElementById('stop-loss').value) || null;
+        const takeProfit = parseFloat(document.getElementById('take-profit').value) || null;
+        const closeDate = document.getElementById('close-date').value || null;
+
+        if (!date || !quantity || quantity % 100 !== 0) {
+            alert('请填写完整的交易信息，股数必须是100的倍数');
+            return;
+        }
+
+        const response = await fetch('/simulate_order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                side, 
+                type, 
+                date, 
+                price, 
+                quantity, 
+                stopLoss, 
+                takeProfit, 
+                closeDate 
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showTradeResult(result.chart_data, result.buy_point, result.sell_point, result.info);
+        } else {
+            alert(result.message);
+        }
+    } catch (error) {
+        console.error('提交订单失败:', error);
+        alert('网络错误，请重试');
+    }
+}
+
+// === 显示交易结果模态框 - 修复买卖点显示 ===
+function showTradeResult(chartData, buyPoint, sellPoint, info) {
+    document.getElementById('trade-result-modal').style.display = 'block';
+    const tradeChart = echarts.init(document.getElementById('trade-chart'));
+    
+    // 确保买卖点坐标格式正确
+    const markPointData = [];
+    if (buyPoint && buyPoint.length === 2) {
+        markPointData.push({ 
+            name: '买点', 
+            coord: buyPoint, 
+            itemStyle: { color: 'green' },
+            symbolSize: 20
+        });
+    }
+    if (sellPoint && sellPoint.length === 2) {
+        markPointData.push({ 
+            name: '卖点', 
+            coord: sellPoint, 
+            itemStyle: { color: 'red' },
+            symbolSize: 20
+        });
+    }
+    
+    tradeChart.setOption({
+        title: {
+            text: '交易走势图',
+            left: 'center'
+        },
+        tooltip: {
+            trigger: 'axis'
+        },
+        xAxis: { 
+            type: 'category', 
+            data: chartData.dates,
+            name: '日期'
+        },
+        yAxis: { 
+            type: 'value',
+            name: '价格'
+        },
+        dataZoom: [{
+            type: 'inside'
+        }],
+        series: [{
+            name: '价格走势',
+            type: 'line',
+            data: chartData.prices,
+            lineStyle: {
+                color: '#5470c6',
+                width: 2
+            },
+            markPoint: {
+                data: markPointData,
+                label: {
+                    show: true,
+                    formatter: '{b}',
+                    position: 'top'
+                }
+            }
+        }]
+    });
+    
+    document.getElementById('trade-info').innerHTML = `
+        <h4>交易详情</h4>
+        <p><strong>开单日期:</strong> ${info.buy_date || 'N/A'}</p>
+        <p><strong>股票数量:</strong> ${info.quantity || 'N/A'}</p>
+        <p><strong>买入价格:</strong> ${info.buy_price || 'N/A'}</p>
+        <p><strong>平仓日期:</strong> ${info.sell_date || 'N/A'}</p>
+        <p><strong>卖出价格:</strong> ${info.sell_price || 'N/A'}</p>
+        <p><strong>盈亏:</strong> ${info.profit || 'N/A'}</p>
+        <p><strong>盈亏比:</strong> ${info.profit_rate || 'N/A'}%</p>
+    `;
+}
+
+function closeModal() {
+    document.getElementById('trade-result-modal').style.display = 'none';
+}
+
+// 窗口大小变化时重绘图表
+window.addEventListener('resize', function() {
+    if (chart) {
+        chart.resize();
+    }
+});
+</script>
+</body>
+</html>

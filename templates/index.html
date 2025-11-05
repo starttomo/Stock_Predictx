@@ -114,38 +114,8 @@
                 <button onclick="generateStrategy()" class="btn-strategy">生成交易策略</button>
                 <button onclick="showForecast()" class="btn-forecast">查看未来预测</button>
                 <div id="strategy-result" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; display: none;"></div>
+                <a href="{{ url_for('simulate_trade') }}" class="btn-strategy" style="display: block; text-align: center; margin-top: 10px;">进入模拟交易</a>
             </div>
-
-            <!-- 改进的交易面板 -->
-            <div class="section">
-                <h3>模拟交易</h3>
-                <div class="trade-tabs">
-                    <button class="tab-btn active" onclick="openTab('market-tab')">市价单</button>
-                    <button class="tab-btn" onclick="openTab('limit-tab')">限价单</button>
-                </div>
-
-                <!-- 市价单 -->
-                <div id="market-tab" class="tab-content active">
-                    <div class="trade-form">
-                        <input type="number" id="market-quantity" placeholder="股数" min="100" step="100">
-                        <button onclick="buyOrder()" class="btn-buy">买入</button>
-                        <button onclick="sellOrder()" class="btn-sell">卖出</button>
-                    </div>
-                </div>
-
-                <!-- 限价单 -->
-                <div id="limit-tab" class="tab-content">
-                    <div class="trade-form">
-                        <input type="number" id="limit-price" placeholder="价格" step="0.01">
-                        <input type="number" id="limit-quantity" placeholder="股数" min="100" step="100">
-                        <button onclick="buyOrder()" class="btn-buy">买入</button>
-                        <button onclick="sellOrder()" class="btn-sell">卖出</button>
-                    </div>
-                </div>
-
-                <div id="order-result"></div>
-            </div>
-
             <!-- 持仓信息 -->
             <div class="section">
                 <h3>持仓信息</h3>
@@ -157,15 +127,6 @@
     </div>
 </div>
 
-<!-- 预测模态框 -->
-<div id="forecast-modal" class="modal">
-    <div class="modal-content">
-        <span class="close" onclick="closeForecastModal()">×</span>
-        <h3>未来5日价格预测</h3>
-        <div id="forecast-chart" style="height: 400px;"></div>
-        <div id="forecast-table" style="margin-top: 20px;"></div>
-    </div>
-</div>
 
 <script>
 // === 数据准备 ===
@@ -267,76 +228,6 @@ function toggleSeries(name) {
     });
 }
 
-// === 交易功能 ===
-async function placeOrder(direction, orderType) {
-    let quantity, price;
-
-    if (direction === 'BUY') {
-        if (orderType === 'MARKET') {
-            quantity = parseInt(document.getElementById('market-quantity').value);
-            price = null;
-        } else {
-            quantity = parseInt(document.getElementById('limit-quantity').value);
-            price = parseFloat(document.getElementById('limit-price').value);
-        }
-    } else { // SELL
-        orderType = 'MARKET';
-        quantity = parseInt(document.getElementById('market-quantity').value) ||
-                   parseInt(document.getElementById('limit-quantity').value);
-        price = null;
-    }
-
-    if (!quantity || quantity % 100 !== 0) {
-        alert('请输入正确的股数（100的倍数）');
-        return;
-    }
-
-    if (orderType === 'LIMIT' && (!price || price <= 0)) {
-        alert('请输入有效的限价价格');
-        return;
-    }
-
-    try {
-        const response = await fetch('/place_order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                direction: direction,
-                order_type: orderType,
-                quantity: quantity,
-                price: price
-            })
-        });
-
-        const result = await response.json();
-        const resultDiv = document.getElementById('order-result');
-
-        if (result.success) {
-            resultDiv.innerHTML = `<div class="success-message">${result.message}</div>`;
-            // 清空输入框
-            document.getElementById('market-quantity').value = '';
-            document.getElementById('limit-quantity').value = '';
-            document.getElementById('limit-price').value = '';
-            // 更新持仓信息
-            updatePortfolio();
-        } else {
-            resultDiv.innerHTML = `<div class="error-message">${result.message}</div>`;
-        }
-    } catch (error) {
-        alert('交易失败: ' + error);
-    }
-}
-
-// 修改按钮点击事件
-function buyOrder() {
-    const activeTab = document.querySelector('.tab-content.active').id;
-    const orderType = activeTab === 'market-tab' ? 'MARKET' : 'LIMIT';
-    placeOrder('BUY', orderType);
-}
-
-function sellOrder() {
-    placeOrder('SELL', 'MARKET');
-}
 
 // === 持仓信息 ===
 async function updatePortfolio() {

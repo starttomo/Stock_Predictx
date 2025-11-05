@@ -3,7 +3,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from database.models import db, User, Trade, Forecast
 from data.loader import get_hs300_data
-from utils.indicators import add_indicators
+from utils.indicators import add_indicators, simulate_order  # 添加simulate_order导入
 from datetime import datetime
 import pandas as pd
 from  analysis.strategy import generate_strategy
@@ -170,32 +170,104 @@ def index():
                            analysis=analysis,
                            today=datetime.now().strftime('%Y-%m-%d'))
 
-@app.route('/buy', methods=['POST'])
+@app.route('/simulate_trade')
 @login_required
-def buy():
-    price = float(request.json['price'])
-    shares = int(request.json['shares'])
-    date = request.json['date']
+def simulate_trade():
+    df = get_hs300_data()
+    df = add_indicators(df)
+    return render_template('simulate_trade.html', data=df.to_dict(orient='records'))
 
-    if shares % 100 != 0:
-        return jsonify(success=False, message="必须100股的倍数")
+# 在app.py中添加缺失的路由
+@app.route('/predict_guide', methods=['POST'])
+@login_required
+def predict_guide():
+    """预测指导接口"""
+    try:
+        data = request.json
+        start_date = data.get('start')
+        end_date = data.get('end')
+        
+        if not start_date or not end_date:
+            return jsonify(success=False, message="请选择起始和结束日期")
+        
+        df = get_hs300_data()
+        df = add_indicators(df)
+        
+        # 过滤指定日期范围的数据
+        mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
+        period_df = df[mask]
+        
+        if period_df.empty:
+            return jsonify(success=False, message="所选日期范围内无数据")
+        
+        # 生成简单的预测指导
+        latest = period_df.iloc[-1]
+        guide = f"""
+        <h4>预测指导分析 ({start_date} 至 {end_date})</h4>
+        <p><strong>收盘价:</strong> {latest['close']:.2f}</p>
+        <p><strong>RSI:</strong> {latest['rsi']:.2f} - {'超买' if latest['rsi'] > 70 else '超卖' if latest['rsi'] < 30 else '中性'}</p>
+        <p><strong>价格位置:</strong> {'上轨附近' if latest['close'] >= latest['upper'] else '下轨附近' if latest['close'] <= latest['lower'] else '轨道中部'}</p>
+        <p><strong>均线趋势:</strong> {'多头排列' if latest['ma7'] > latest['ma30'] else '空头排列'}</p>
+        """
+        
+        return jsonify(success=True, guide=guide)
+        
+    except Exception as e:
+        return jsonify(success=False, message=f"预测指导失败: {str(e)}")
 
-    cost = Decimal(str(price * shares))  # 转为 Decimal
-    if current_user.cash < cost:
-        return jsonify(success=False, message="余额不足")
+# 修复simulate_order路由中的函数调用问题
+@app.route('/simulate_order', methods=['POST'])
+@login_required
+def simulate_order_route():  # 重命名函数避免冲突
+    try:
+        data = request.json
+        side = data.get('side')
+        order_type = data.get('type')
+        order_date = data.get('date')
+        price = float(data.get('price')) if data.get('price') else None
+        quantity = int(data.get('quantity'))
+        stop_loss = float(data.get('stopLoss')) if data.get('stopLoss') else None
+        take_profit = float(data.get('takeProfit')) if data.get('takeProfit') else None
+        close_date = data.get('closeDate')
 
-    trade = Trade(
-        user_id=current_user.id,
-        buy_date=pd.to_datetime(date).date(),
-        buy_price=Decimal(str(price)),
-        quantity=shares
-    )
-    current_user.cash -= cost
-    db.session.add(trade)
-    db.session.commit()
+        if not order_date or not close_date:
+            return jsonify(success=False, message="请选择挂单日期和平仓日期")
 
-    return jsonify(success=True, cash=float(current_user.cash))
-# app.py 新增路由
+        df = get_hs300_data()
+        
+        # 调用正确的simulate_order函数
+        success, result = simulate_order(df, order_date, close_date, price, stop_loss, take_profit)
+        
+        if not success:
+            return jsonify(success=False, message=result)
+
+        # 解析返回结果
+        chart_data, sell_date, sell_price = result
+        
+        # 计算盈亏
+        buy_price = price or df[df['date'] == pd.to_datetime(order_date)]['close'].iloc[0]
+        profit = (sell_price - buy_price) * quantity
+        profit_rate = (profit / (buy_price * quantity)) * 100
+
+        info = {
+            'buy_date': order_date,
+            'quantity': quantity,
+            'buy_price': buy_price,
+            'sell_date': sell_date.strftime('%Y-%m-%d'),
+            'sell_price': sell_price,
+            'profit': profit,
+            'profit_rate': profit_rate
+        }
+        
+        return jsonify(success=True, 
+                      chart_data=chart_data, 
+                      buy_point=[0, float(buy_price)], 
+                      sell_point=[len(chart_data['dates']) - 1, float(sell_price)], 
+                      info=info)
+                      
+    except Exception as e:
+        return jsonify(success=False, message=f"模拟交易失败: {str(e)}")
+
 @app.route('/profile')
 @login_required
 def profile():
