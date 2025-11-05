@@ -12,7 +12,7 @@ def get_baostock_data():
         # 获取沪深300指数数据
         rs = bs.query_history_k_data_plus("sh.000300",
                                           "date,open,high,low,close,volume,amount",
-                                          start_date='2015-01-01', end_date='2025-10-30',
+                                          start_date='2015-01-01', end_date='2025-11-5',
                                           frequency="d", adjustflag="3")
 
         print('查询历史K线数据响应:', rs.error_msg)

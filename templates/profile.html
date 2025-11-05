@@ -36,67 +36,63 @@
     </div>
 
     <div class="stats-grid">
-        <div class="stat-card">
-            <h3>初始本金</h3>
-            <p class="amount">￥{{ "%.2f"|format(user.total_invest) }}</p>
-        </div>
-        <div class="stat-card">
-            <h3>当前总资产</h3>
-            <p class="amount">￥{{ "%.2f"|format(user.current_value) }}</p>
-        </div>
-        <div class="stat-card">
-            <h3>累计收益</h3>
-            <p class="amount {{ 'profit-positive' if user.profit >= 0 else 'profit-negative' }}">
-                ￥{{ "%.2f"|format(user.profit) }}
-            </p>
-        </div>
-        <div class="stat-card">
-            <h3>收益率</h3>
-            <p class="amount {{ 'profit-positive' if user.profit_rate >= 0 else 'profit-negative' }}">
-                {{ "%.2f"|format(user.profit_rate) }}%
-            </p>
-        </div>
+    <div class="stat-card">
+        <h3>初始本金</h3>
+        <p class="amount">￥{{ "%.2f"|format(user.total_invest) }}</p>
     </div>
+    <div class="stat-card">
+        <h3>当前总资产</h3>
+        <p class="amount">￥{{ "%.2f"|format(user.current_value) }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>累计收益</h3>
+        <p class="amount {{ 'profit-positive' if user.profit >= 0 else 'profit-negative' }}">
+            ￥{{ "%.2f"|format(user.profit) }}
+        </p>
+    </div>
+    <div class="stat-card">
+        <h3>收益率</h3>
+        <p class="amount {{ 'profit-positive' if user.profit_rate >= 0 else 'profit-negative' }}">
+            {{ "%.2f"|format(user.profit_rate) }}%
+        </p>
+    </div>
+</div>
 
-    <div class="section">
-        <h3>持仓明细</h3>
-        <table class="trade-table">
-            <thead>
-                <tr>
-                    <th>成交日期</th>
-                    <th>方向</th>
-                    <th>成交价格</th>
-                    <th>数量</th>
-                    <th>成交金额</th>
-                    <th>状态</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for trade in trades %}
-                <tr>
-                    <td>{{ trade.filled_date.strftime('%Y-%m-%d %H:%M') if trade.filled_date else '-' }}</td>
-                    <td><span style="color: {{ 'red' if trade.direction == 'BUY' else 'green' }}">
-                        {{ '买入' if trade.direction == 'BUY' else '卖出' }}
-                    </span></td>
-                    <td>{{ "%.2f"|format(trade.filled_price) if trade.filled_price else '-' }}</td>
-                    <td>{{ trade.filled_quantity if trade.filled_quantity else trade.order_quantity }}</td>
-                    <td>
-                        {% if trade.filled_price and trade.filled_quantity %}
-                            {{ "%.2f"|format(trade.filled_price * trade.filled_quantity) }}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    <td>
-                        <span class="status-{{ trade.status.lower() }}">
-                            {{ {'PENDING': '待成交', 'FILLED': '已成交', 'CANCELLED': '已取消'}.get(trade.status, trade.status) }}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+<div class="section">
+    <h3>持仓明细</h3>
+    <table class="trade-table">
+        <thead>
+            <tr>
+                <th>买入日期</th>
+                <th>买入价格</th>
+                <th>数量</th>
+                <th>卖出日期</th>
+                <th>卖出价格</th>
+                <th>状态</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for trade in trades %}
+            <tr>
+                <td>{{ trade.buy_date.strftime('%Y-%m-%d') if trade.buy_date else '-' }}</td>
+                <td>{{ "%.2f"|format(trade.buy_price) if trade.buy_price else '-' }}</td>
+                <td>{{ trade.quantity }}</td>
+                <td>{{ trade.sell_date.strftime('%Y-%m-%d') if trade.sell_date else '-' }}</td>
+                <td>{{ "%.2f"|format(trade.sell_price) if trade.sell_price else '-' }}</td>
+                <td>
+                    {% if trade.sell_price %}
+                        已卖出
+                    {% elif trade.status == 'filled' %}
+                        持仓中
+                    {% else %}
+                        {{ trade.status }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 </div>
 </body>
 </html>

@@ -16,7 +16,6 @@ class TradeEngine:
         df = get_hs300_data()
         current_price = Decimal(str(df['close'].iloc[-1]))
 
-        # 资金和持仓检查
         if direction == 'BUY':
             if order_type == 'MARKET':
                 total_cost = current_price * quantity
@@ -25,14 +24,7 @@ class TradeEngine:
 
             if user.cash < total_cost:
                 return False, "资金不足"
-        else:  # SELL 操作
-            # 检查持仓是否足够
-            position = TradeEngine.get_position(user_id)
-            if position < quantity:
-                return False, f"持仓不足，当前持仓: {position}股"
 
-        # 创建订单
-        if direction == 'BUY':
             trade = Trade(
                 user_id=user_id,
                 buy_date=datetime.now().date(),
@@ -45,55 +37,68 @@ class TradeEngine:
                 status='filled' if order_type == 'MARKET' else 'pending'
             )
 
-            # 市价单立即成交并扣款
-            if order_type == 'MARKET':
-                user.cash -= current_price * quantity
+            db.session.add(trade)
 
-        else:  # SELL 操作
-            # 查找要卖出的持仓
+            if order_type == 'MARKET':
+                user.cash -= total_cost
+
+            db.session.commit()
+            return True, "订单提交成功"
+
+        elif direction == 'SELL':
+            # 检查持仓
+            position = TradeEngine.get_position(user_id)
+            if position < quantity:
+                return False, f"持仓不足，当前持仓: {position}股"
+
             buy_trades = Trade.query.filter_by(
                 user_id=user_id,
                 sell_price=None,
                 status='filled'
             ).order_by(Trade.buy_date).all()
 
-            # 计算可卖出数量
-            available_shares = sum(t.quantity for t in buy_trades)
-            if available_shares < quantity:
-                return False, f"可卖出持仓不足，可用: {available_shares}股"
-
-            # 创建卖出交易记录
-            # 简化处理：平均卖出价格
-            trade = Trade(
-                user_id=user_id,
-                buy_date=datetime.now().date(),  # 卖出时也记录为buy_date，但用direction区分
-                buy_price=current_price,  # 卖出价格记录在buy_price字段
-                quantity=quantity,
-                order_type=order_type.lower(),
-                limit_price=price if order_type == 'LIMIT' else None,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                status='filled' if order_type == 'MARKET' else 'pending'
-            )
-
-            # 标记为卖出交易（通过设置sell_price）
-            trade.sell_price = current_price
-            trade.sell_date = datetime.now().date()
-
-            # 市价单立即成交并收款
             if order_type == 'MARKET':
-                user.cash += current_price * quantity
+                remaining = quantity
+                for buy_trade in buy_trades:
+                    if remaining <= 0:
+                        break
+                    sell_qty = min(remaining, buy_trade.quantity)
+                    if sell_qty < buy_trade.quantity:
+                        # 分割剩余持仓
+                        remaining_buy = Trade(
+                            user_id=user_id,
+                            buy_date=buy_trade.buy_date,
+                            buy_price=buy_trade.buy_price,
+                            quantity=buy_trade.quantity - sell_qty,
+                            order_type=buy_trade.order_type,
+                            limit_price=buy_trade.limit_price,
+                            stop_loss=buy_trade.stop_loss,
+                            take_profit=buy_trade.take_profit,
+                            status='filled'
+                        )
+                        db.session.add(remaining_buy)
+                        buy_trade.quantity = sell_qty
 
-        db.session.add(trade)
-        db.session.commit()
-        return True, "订单提交成功"
+                    buy_trade.sell_date = datetime.now().date()
+                    buy_trade.sell_price = current_price
+                    remaining -= sell_qty
+
+                if remaining > 0:
+                    return False, "持仓不足"
+
+                user.cash += current_price * quantity
+                db.session.commit()
+                return True, "订单提交成功"
+            else:
+                # LIMIT sell, 简化不实现完整限价逻辑
+                return False, "限价卖出暂不支持"
 
     @staticmethod
     def get_position(user_id):
         """获取持仓数量 - 只计算未卖出的买入交易"""
         buys = db.session.query(db.func.sum(Trade.quantity)).filter(
             Trade.user_id == user_id,
-            Trade.sell_price == None,  # 未卖出的
+            Trade.sell_price == None,
             Trade.status == 'filled'
         ).scalar() or 0
 

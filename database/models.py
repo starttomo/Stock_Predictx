@@ -13,8 +13,8 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(50), unique=True, nullable=False, index=True)
     password = db.Column(db.String(255), nullable=False)
     cash = db.Column(db.DECIMAL(15, 4), default=1000000.0)  # 增加小数位数
-    total_invest = db.Column(db.DECIMAL(15, 4), default=100000.0)
-    current_value = db.Column(db.DECIMAL(15, 4), default=100000.0)
+    total_invest = db.Column(db.DECIMAL(15, 4), default=1000000.0)
+    current_value = db.Column(db.DECIMAL(15, 4), default=1000000.0)
     profit = db.Column(db.DECIMAL(15, 4), default=0.0)
     profit_rate = db.Column(db.DECIMAL(10, 4), default=0.0)  # 修正为10,4
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
