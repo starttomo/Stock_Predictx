@@ -146,6 +146,12 @@
                 <h2>历史 K 线</h2>
             </div>
             <div id="chart" style="height: 600px; width: 100%;"></div>
+             <!-- 新增：日期选框和查询 -->
+            <div class="date-input-wrapper" style="margin-top: 15px; display: flex; align-items: center;">
+                <input type="date" id="kline-query-date" style="margin-right:10px;"/>
+                <button onclick="queryDatePrice()" style="background:#1890ff; color:white; border:none; padding:8px 16px; border-radius:5px; cursor:pointer;">查询收盘价及误差</button>
+                <span id="date-query-result" style="margin-left:15px; font-size:13px; color:#333;"></span>
+            </div>
         </div>
 
         <!-- 右侧：交易操作 -->
@@ -160,8 +166,8 @@
                     <input type="date" id="predict-end-date" placeholder="选择结束日期">
                     <div class="date-suggestions" id="predict-end-suggestions"></div>
                 </div>
-                <button onclick="getPredictGuide()" class="btn-strategy">获取预测指导</button>
-                <div id="predict-guide-result" style="margin-top: 10px;"></div>
+                <button id="btn-toggle-analysis" class="btn-strategy" onclick="toggleAnalysis()">获取预测指导</button>
+                <div id="analysis-result" style="margin-top: 10px; display: none;"></div>
             </div>
 
             <div class="section">
@@ -189,12 +195,6 @@
                 <button onclick="submitOrder()" class="btn-submit">开始交易</button>
             </div>
 
-            <!-- 添加策略生成部分 -->
-            <div class="section">
-                <h3>策略分析</h3>
-                <button onclick="getAnalysis()" class="btn-strategy">生成交易策略</button>
-                <div id="analysis-result" style="margin-top: 10px;"></div>
-            </div>
         </div>
     </div>
 </div>
@@ -382,77 +382,142 @@ function renderChart() {
     }, true);
 }
 
-// === 获取策略分析 ===
 async function getAnalysis() {
     try {
         const response = await fetch('/get_analysis');
+        // 优先判断 status
+        if (!response.ok) {
+            // 如果是服务器错误，直接读取 text（只读取一次）
+            const errorText = await response.text();
+            alert('获取分析失败: ' + errorText);
+            return;
+        }
+        // 仅当 response.ok 时解析 json
         const data = await response.json();
-        renderAnalysis(data.analysis);
+        if (!data.success) {
+            alert(data.message || "分析失败");
+            return;
+        }
+        renderAnalysis(data.analysis); // 或者 data.future
     } catch (error) {
         alert('获取分析失败: ' + error);
     }
 }
+let analysisShown = false;
+let latestFuture = null; // 缓存最近一次future
 
-// === 渲染策略分析 ===
-function renderAnalysis(analysis) {
+async function toggleAnalysis() {
     const resultDiv = document.getElementById('analysis-result');
-    resultDiv.innerHTML = `
-        <div class="analysis-section">
-            <h4>当前分析</h4>
-            <p>${analysis.current_analysis}</p>
-        </div>
-        <div class="analysis-section">
-            <h4>未来策略</h4>
-            <p>${analysis.future_strategy}</p>
-        </div>
-        <div class="analysis-section">
-            <h4>风险评估</h4>
-            <p>${analysis.risk}</p>
-        </div>
-        <div class="analysis-section">
-            <h4>预期回报</h4>
-            <p>${analysis.expected_return.toFixed(2)}%</p>
-        </div>
-    `;
-}
-
-// === 预测指导函数 - 添加错误处理 ===
-async function getPredictGuide() {
-    try {
-        const start = document.getElementById('predict-start-date').value;
+    const btn = document.getElementById('btn-toggle-analysis');
+    if (!analysisShown) {
+        // 获取用户选择的截止日期
         const end = document.getElementById('predict-end-date').value;
-        if (!start || !end) {
-            alert('请选择起始和结束日期');
-            return;
+        try {
+            const response = await fetch('/get_analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ end: end })
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                alert('获取分析失败: ' + errorText);
+                return;
+            }
+            const data = await response.json();
+            if (!data.success) {
+                alert(data.message || "模型预测失败");
+                return;
+            }
+            // 显示策略分析和5日预测
+            renderAnalysis(data.analysis, data.future);
+            // 缓存一下，方便误差对比
+            latestFuture = data.future;
+            resultDiv.style.display = 'block';
+            btn.textContent = '收起预测指导';
+            analysisShown = true;
+        } catch (error) {
+            alert('获取分析失败: ' + error);
         }
-
-        // 验证日期是否有效
-        if (!isValidDate(start) || !isValidDate(end)) {
-            alert('当前日期未开盘');
-            return;
-        }
-
-        const response = await fetch('/predict_guide', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ start, end })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            document.getElementById('predict-guide-result').innerHTML = result.guide;
-        } else {
-            document.getElementById('predict-guide-result').innerHTML =
-                `<div class="error-message">${result.message}</div>`;
-        }
-    } catch (error) {
-        console.error('获取预测指导失败:', error);
-        document.getElementById('predict-guide-result').innerHTML =
-            `<div class="error-message">网络错误，请重试</div>`;
+    } else {
+        resultDiv.style.display = 'none';
+        btn.textContent = '展开预测指导';
+        analysisShown = false;
     }
 }
 
+function renderAnalysis(analysis, future) {
+    let html = `
+    <div class="analysis-section"><h4>当前分析</h4><p>${analysis.current_analysis}</p></div>
+    <div class="analysis-section"><h4>未来策略</h4><p>${analysis.future_strategy}</p></div>
+    <div class="analysis-section"><h4>风险评估</h4><p>${analysis.risk}</p></div>
+    <div class="analysis-section"><h4>预期回报</h4><p>${analysis.expected_return !== undefined && analysis.expected_return !== null ? analysis.expected_return.toFixed(2) : "N/A"}%</p></div>
+    <div class="analysis-section">
+        <h4>未来5日预测结果</h4>
+        <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+            <tr style="background:#1890ff; color:white;">
+                <th>日期</th>
+                <th>预测价格</th>
+                <th>置信区间</th>
+            </tr>`;
+
+    if (future && Array.isArray(future.dates) && Array.isArray(future.predictions) && Array.isArray(future.confidence_intervals)) {
+        for (let i = 0; i < future.dates.length; i++) {
+            html += `<tr>
+                <td>${future.dates[i]}</td>
+                <td>${future.predictions[i] !== undefined && future.predictions[i] !== null ? future.predictions[i].toFixed(2) : "N/A"}</td>
+                <td>${
+                    future.confidence_intervals[i] &&
+                    future.confidence_intervals[i][0] !== undefined &&
+                    future.confidence_intervals[i][1] !== undefined ?
+                        future.confidence_intervals[i][0].toFixed(2) + " ~ " + future.confidence_intervals[i][1].toFixed(2)
+                        : "N/A"
+                }</td>
+            </tr>`;
+        }
+    } else {
+        html += `<tr><td colspan="3" style="text-align:center;">暂无有效预测结果</td></tr>`;
+    }
+
+    html += `</table>
+        <div id="prediction-vs-actual" style="margin-top:10px;"></div>
+    </div>`;
+    document.getElementById('analysis-result').innerHTML = html;
+}
+// 左侧K线图日期查询收盘价及误差
+function queryDatePrice() {
+    const queryDate = document.getElementById('kline-query-date').value;
+    const dateResultSpan = document.getElementById('date-query-result');
+    if (!queryDate) {
+        dateResultSpan.textContent = "请选择日期";
+        return;
+    }
+    // 从全局 data 寻找此日收盘价
+    const dataItem = data.find(d => d.date.toISOString().split('T')[0] === queryDate);
+    if (!dataItem) {
+        dateResultSpan.textContent = "该日无数据";
+        return;
+    }
+    const realClose = dataItem.close;
+    let predClose = "暂无预测";
+    let errorValue = "";
+
+    // 取未来预测第一个价格（实际可按business定义）
+    if (latestFuture && latestFuture.dates.length > 0) {
+        // 寻找5日预测表中第一个与查询日期匹配的预测价（或第一个未来价）
+        const idx = latestFuture.dates.findIndex(dt => dt === queryDate);
+        if (idx !== -1) {
+            predClose = latestFuture.predictions[idx];
+            errorValue = predClose - realClose;
+        } else if (latestFuture.predictions.length > 0) {
+            predClose = latestFuture.predictions[0];
+            errorValue = predClose - realClose;
+        }
+        let errorPercent = realClose === 0 ? "" : ((errorValue / realClose) * 100).toFixed(2) + "%";
+        dateResultSpan.innerHTML = `收盘价: <b>${realClose.toFixed(2)}</b>，预测价: <b>${typeof predClose === "number" ? predClose.toFixed(2) : predClose}</b>，误差: <span style="color:${errorValue >= 0 ? '#f56c6c':'#67c23a'}">${errorValue.toFixed(2)} (${errorPercent})</span>`;
+    } else {
+        dateResultSpan.textContent = `收盘价: ${realClose.toFixed(2)}，暂无预测`;
+    }
+}
 // === 提交订单函数 - 添加错误处理 ===
 async function submitOrder() {
     try {

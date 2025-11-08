@@ -6,6 +6,7 @@ from data.loader import get_hs300_data
 from utils.indicators import add_indicators, simulate_order  # 添加simulate_order导入
 from datetime import datetime
 import pandas as pd
+from predict import predict_future, create_features, prepare_sequences_multivariate
 from  analysis.strategy import generate_strategy
 from decimal import Decimal
 from utils.trade_engine import TradeEngine
@@ -28,20 +29,33 @@ def load_user(user_id):
 from utils.trade_engine import TradeEngine
 
 
-@app.route('/get_analysis')
+@app.route('/get_analysis', methods=['GET', 'POST'])
 @login_required
 def get_analysis():
+    try:
+        end_date = None
+        if request.method == 'POST':
+            json_data = request.json or {}
+            end_date = json_data.get('end')
+        df = get_hs300_data()
+        df = create_features(df)
+        if end_date:
+            min_date = pd.to_datetime('2015-01-01')
+            user_date = pd.to_datetime(end_date)
+            df = df[(df['date'] >= min_date) & (df['date'] <= user_date)].reset_index(drop=True)
+        future = predict_future(target_date=end_date)
+        if not future:
+            return jsonify(success=False, message="数据不足或预测失败")
+        analysis_obj = generate_strategy(df, future)
+        return jsonify(success=True, analysis=analysis_obj, future=future)
+    except Exception as e:
+        return jsonify(success=False, message=f"分析失败: {str(e)}")
+@app.route('/valid_dates')
+@login_required
+def valid_dates():
     df = get_hs300_data()
-    df = add_indicators(df)
-
-    # 获取预测用于策略
-    forecasts = Forecast.query.order_by(Forecast.date).all()
-    future = [(f.date.strftime('%Y-%m-%d'), float(f.yhat)) for f in forecasts[-5:]]  # future_predictions格式：list of (date, yhat)
-
-    analysis = generate_strategy(df, future)  # 传入future
-    return jsonify(analysis=analysis)
-
-
+    dates = sorted(df['date'].astype(str).tolist())
+    return jsonify(dates=dates)
 @app.route('/get_forecast')
 @login_required
 def get_forecast():
@@ -177,45 +191,7 @@ def simulate_trade():
     df = add_indicators(df)
     return render_template('simulate_trade.html', data=df.to_dict(orient='records'))
 
-# 在app.py中添加缺失的路由
-@app.route('/predict_guide', methods=['POST'])
-@login_required
-def predict_guide():
-    """预测指导接口"""
-    try:
-        data = request.json
-        start_date = data.get('start')
-        end_date = data.get('end')
 
-        if not start_date or not end_date:
-            return jsonify(success=False, message="请选择起始和结束日期")
-
-        df = get_hs300_data()
-        df = add_indicators(df)
-
-        # 过滤指定日期范围的数据
-        mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
-        period_df = df[mask]
-
-        if period_df.empty:
-            return jsonify(success=False, message="所选日期范围内无数据")
-
-        # 生成简单的预测指导
-        latest = period_df.iloc[-1]
-        guide = f"""
-        <h4>预测指导分析 ({start_date} 至 {end_date})</h4>
-        <p><strong>收盘价:</strong> {latest['close']:.2f}</p>
-        <p><strong>RSI:</strong> {latest['rsi']:.2f} - {'超买' if latest['rsi'] > 70 else '超卖' if latest['rsi'] < 30 else '中性'}</p>
-        <p><strong>价格位置:</strong> {'上轨附近' if latest['close'] >= latest['upper'] else '下轨附近' if latest['close'] <= latest['lower'] else '轨道中部'}</p>
-        <p><strong>均线趋势:</strong> {'多头排列' if latest['ma7'] > latest['ma30'] else '空头排列'}</p>
-        """
-
-        return jsonify(success=True, guide=guide)
-
-    except Exception as e:
-        return jsonify(success=False, message=f"预测指导失败: {str(e)}")
-
-# 修复simulate_order路由中的函数调用问题
 @app.route('/simulate_order', methods=['POST'])
 @login_required
 def simulate_order_route():  # 重命名函数避免冲突

@@ -1,20 +1,22 @@
-# analysis/strategy.py
 import pandas as pd
 import numpy as np
+import math
 
-# 经济学依据：基于弱形式有效市场假设（Fama, 1970）和行为金融学（Kahneman & Tversky, 1979），
-# 使用TA指标捕捉历史价格模式。整合LSTM预测符合预期理论（Muth, 1961），参考论文：Agrawal et al. (2021)
-# "Stock Price Prediction using Technical Indicators: A Predictive Model using Optimal Deep Learning"，
-# 证明TA+数值预测提升策略准确率20-30%。
+def nan_safe(val, fallback=0.0):
+    if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+        return fallback
+    return float(val)
 
-def generate_strategy(df, future_predictions):
-    """
-    生成交易策略：结合历史指标和模型预测。
-    - 历史部分：用RSI、MACD、BOLL等定性分析当前信号。
-    - 预测部分：用未来yhat计算未来指标，量化预期涨幅/风险。
-    - 输出：字典，包括当前建议、未来预期、风险评估。
-    """
-    # 历史分析（定性）
+def generate_strategy(df, future):
+    if len(df) == 0 or not future or 'predictions' not in future or len(future['predictions']) == 0:
+        return {
+            'current_analysis': "数据不足，无法分析。",
+            'future_strategy': "无法生成未来策略。",
+            'risk': "无法评估风险。",
+            'expected_return': 0.0
+        }
+
+    # --- 当前分析
     last = df.iloc[-1]
     current_signal = ""
     if last['rsi'] < 30:
@@ -29,37 +31,40 @@ def generate_strategy(df, future_predictions):
     else:
         current_signal += "；MACD死叉，趋势向下"
 
-    # 预测整合（量化）：用未来yhat扩展df，计算未来指标
+    # --- 未来分析
+    future_predictions = list(zip(future['dates'], future['predictions']))
     future_df = pd.DataFrame(future_predictions, columns=['date', 'close'])
     future_df['date'] = pd.to_datetime(future_df['date'])
-    extended_df = pd.concat([df.tail(20), future_df])  # 用最后20天历史+预测，计算滚动指标
-
-    # 计算未来指标（简化自回归：重新计算RSI、MA等）
+    extended_df = pd.concat([df.tail(20), future_df])
     close_ext = extended_df['close']
-    # 未来MA
-    extended_df['ma5_future'] = close_ext.rolling(5).mean()
-    # 未来RSI
+
+    # 未来预期涨幅
+    current_close = float(last['close'])
+    predicted_closes = np.array([nan_safe(x, current_close) for x in future_df['close'].values])
+    if current_close:  # 防止0除
+        expected_return = float(np.mean((predicted_closes - current_close) / current_close) * 100)
+    else:
+        expected_return = 0.0
+    # 再安全一次
+    expected_return = nan_safe(expected_return, 0.0)
+
+    # 未来信号
     delta_ext = close_ext.diff()
     gain_ext = delta_ext.where(delta_ext > 0, 0).rolling(14).mean()
     loss_ext = -delta_ext.where(delta_ext < 0, 0).rolling(14).mean()
     rs_ext = gain_ext / loss_ext
     extended_df['rsi_future'] = 100 - (100 / (1 + rs_ext))
-    # 未来预期涨幅
-    current_close = last['close']
-    predicted_closes = future_df['close'].values
-    expected_return = np.mean((predicted_closes - current_close) / current_close) * 100  # 平均预期回报率
+    last_future_rsi = nan_safe(extended_df['rsi_future'].iloc[-1], 50.0)
 
-    # 未来信号
-    future_signal = ""
-    if extended_df['rsi_future'].iloc[-1] < 30 and expected_return > 3:
+    if last_future_rsi < 30 and expected_return > 3:
         future_signal = f"预测未来RSI超卖，预期涨幅{expected_return:.2f}%，建议买入"
-    elif extended_df['rsi_future'].iloc[-1] > 70 or expected_return < -3:
+    elif last_future_rsi > 70 or expected_return < -3:
         future_signal = f"预测未来RSI超买，预期跌幅{-expected_return:.2f}%，建议卖出"
     else:
         future_signal = f"预测中性，预期回报{expected_return:.2f}%，建议持有"
 
-    # 风险评估（用置信区间，假设future_predictions有lower/upper，或简化用波动率）
-    volatility = df['close'].pct_change().std() * 100  # 历史波动率
+    # 风险评估
+    volatility = nan_safe(df['close'].pct_change().std() * 100 if len(df) > 1 else 0.0, 0.0)
     risk_assess = f"风险水平：波动率{volatility:.2f}%；建议设置止损于当前价-5%"
 
     return {

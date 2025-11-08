@@ -303,13 +303,21 @@ function toggleStrategy() {
 async function getAnalysis() {
     try {
         const response = await fetch('/get_analysis');
+        if (!response.ok) {
+            const errorText = await response.text();
+            alert('获取分析失败: ' + errorText);
+            return;
+        }
         const data = await response.json();
+        if (!data.success) {
+            alert(data.message || "分析失败");
+            return;
+        }
         renderAnalysis(data.analysis);
     } catch (error) {
         alert('获取分析失败: ' + error);
     }
 }
-
 // === 渲染策略分析 ===
 function renderAnalysis(analysis) {
     const resultDiv = document.getElementById('strategy-result');
@@ -328,11 +336,12 @@ function renderAnalysis(analysis) {
         </div>
         <div class="analysis-section">
             <h4>预期回报</h4>
-            <p>${analysis.expected_return.toFixed(2)}%</p>
+            <p>${analysis.expected_return !== undefined && analysis.expected_return !== null ? analysis.expected_return.toFixed(2) : "N/A"}%</p>
         </div>
     `;
     resultDiv.style.display = 'block';
 }
+
 
 // === 获取未来预测 ===
 async function showForecast() {

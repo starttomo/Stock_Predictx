@@ -8,8 +8,11 @@ import os
 from data.loader import get_hs300_data
 from model.lstm_model import ImprovedLSTMModel
 from database.models import db, Forecast
-
-
+import math
+def nan_safe(val):
+    if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+        return None
+    return val
 def create_features(df, is_predict=False):
     """创建技术指标特征"""
     close = df['close']
@@ -84,29 +87,28 @@ def prepare_sequences_multivariate(df, seq_len, target_col='close'):
     return np.array(X), np.array(y)
 
 
-def predict_future():
-    """预测未来5个交易日的价格"""
+def predict_future(target_date=None):
     print("开始未来预测...")
 
-    # 检查模型和scaler是否存在
     if not os.path.exists('./model/model/best_model.pth'):
         print("错误：未找到训练好的模型文件 './model/model/best_model.pth'")
         return None
-
     if not os.path.exists('./model/model/scaler_X.pkl') or not os.path.exists('./model/model/scaler_y.pkl'):
         print("错误：未找到scaler文件")
         return None
 
-    # 获取最新数据
     df = get_hs300_data()
     df['date'] = pd.to_datetime(df['date'])
-    df = df[df['date'] > '2020-01-01'].reset_index(drop=True)
-    print(f"使用数据行数: {len(df)}")
+    min_date = pd.to_datetime('2015-01-01')
+    if target_date is not None:
+        user_date = pd.to_datetime(target_date)
+        df = df[(df['date'] >= min_date) & (df['date'] <= user_date)].reset_index(drop=True)
+    else:
+        df = df[df['date'] > min_date].reset_index(drop=True)
+    print(f"使用数据行数: {len(df)}，截止: {target_date if target_date else df['date'].iloc[-1]}")
 
-    # 创建特征
     df = create_features(df)
 
-    # 加载scaler
     try:
         scaler_X = joblib.load('./model/model/scaler_X.pkl')
         scaler_y = joblib.load('./model/model/scaler_y.pkl')
@@ -114,7 +116,6 @@ def predict_future():
         print(f"加载scaler失败: {e}")
         return None
 
-    # 准备序列
     feature_cols = [col for col in df.columns if col != 'date']
     data_scaled = scaler_X.transform(df[feature_cols])
     scaled_df = pd.DataFrame(data_scaled, columns=feature_cols, index=df.index)
@@ -127,7 +128,6 @@ def predict_future():
         print("错误：没有足够的数据生成序列")
         return None
 
-    # 加载模型
     input_size = X.shape[2]
     model = ImprovedLSTMModel(input_size=input_size, hidden_size=100, num_layers=3, output_size=1)
 
@@ -137,32 +137,24 @@ def predict_future():
         print(f"加载模型失败: {e}")
         return None
 
-    # 预测未来
     model.eval()
     last_sequence = X[-1:].copy()
     last_df = df.tail(252).copy()
+    current_date = df['date'].iloc[-1]  # 预测起始点=用户选定日期
 
     future_dates = []
     future_preds = []
-    current_date = df['date'].iloc[-1]
 
     with torch.no_grad():
         temp_sequence = last_sequence.copy()
-
         for i in range(5):
-            # 计算下一个交易日（跳过周末）
             next_date = current_date + timedelta(days=1)
             while next_date.weekday() >= 5:
                 next_date += timedelta(days=1)
-
-            # 预测
             pred_scaled = model(torch.FloatTensor(temp_sequence)).numpy()[0, 0]
             pred_price = scaler_y.inverse_transform([[pred_scaled]])[0, 0]
-
             future_preds.append(pred_price)
             future_dates.append(next_date)
-
-            # 更新数据用于下一次预测
             new_row = last_df.iloc[-1].copy()
             new_row['date'] = next_date
             new_row['close'] = pred_price
@@ -170,48 +162,16 @@ def predict_future():
             new_row['high'] = pred_price * 1.01
             new_row['low'] = pred_price * 0.99
             new_row['volume'] = last_df['volume'].mean()
-
             last_df = pd.concat([last_df, pd.DataFrame([new_row])], ignore_index=True)
             last_df = create_features(last_df, is_predict=True).tail(seq_len)
-
-            # 更新序列
             try:
                 new_scaled = scaler_X.transform(last_df[feature_cols])
                 temp_sequence[0] = new_scaled
             except Exception as e:
                 print(f"更新序列时出错: {e}")
-                # 使用最后有效序列继续预测
                 break
-
             current_date = next_date
 
-    # 保存到数据库
-    try:
-        for date, pred in zip(future_dates, future_preds):
-            uncertainty = pred * 0.03  # 3%的不确定性
-            existing_forecast = Forecast.query.filter_by(date=date.date()).first()
-
-            if not existing_forecast:
-                forecast = Forecast(
-                    date=date.date(),
-                    yhat=pred,
-                    yhat_lower=pred - uncertainty,
-                    yhat_upper=pred + uncertainty
-                )
-                db.session.add(forecast)
-            else:
-                existing_forecast.yhat = pred
-                existing_forecast.yhat_lower = pred - uncertainty
-                existing_forecast.yhat_upper = pred + uncertainty
-
-        db.session.commit()
-        print("预测数据已保存到数据库")
-
-    except Exception as e:
-        print(f"保存到数据库失败: {e}")
-        db.session.rollback()
-
-    # 打印预测结果
     print("\n未来5日预测结果:")
     print("日期        预测价格    置信区间")
     for date, pred in zip(future_dates, future_preds):
@@ -220,8 +180,8 @@ def predict_future():
 
     return {
         'dates': [date.strftime('%Y-%m-%d') for date in future_dates],
-        'predictions': future_preds,
-        'confidence_intervals': [(pred - pred * 0.03, pred + pred * 0.03) for pred in future_preds]
+        'predictions': [nan_safe(pred) for pred in future_preds],
+        'confidence_intervals': [(nan_safe(pred - pred * 0.03), nan_safe(pred + pred * 0.03)) for pred in future_preds]
     }
 
 
