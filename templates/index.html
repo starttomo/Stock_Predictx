@@ -26,7 +26,7 @@
         .btn-buy:hover { background: #b91c1c; }
         .btn-sell:hover { background: #15803d; }
 
-        .btn-strategy, .btn-forecast {
+        .btn-strategy, .btn-forecast, .btn-simulate {
             background: #7c3aed;
             color: white;
             border: none;
@@ -34,9 +34,12 @@
             border-radius: 5px;
             cursor: pointer;
             margin: 5px;
-            width: calc(50% - 10px);
+            width: calc(100% - 10px);
+            text-align: center;
+            display: block;
+            text-decoration: none;
         }
-        .btn-strategy:hover, .btn-forecast:hover { background: #6d28d9; }
+        .btn-strategy:hover, .btn-forecast:hover, .btn-simulate:hover { background: #6d28d9; }
 
         .modal {
             display: none;
@@ -72,6 +75,34 @@
         }
         .success-message { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
         .error-message { background: #fee2e2; color: #dc2626; border: 1px solid #ef4444; }
+
+        /* 策略结果样式 */
+        #strategy-result {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            display: none;
+        }
+        .analysis-section {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .analysis-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        .analysis-section h4 {
+            margin: 0 0 8px 0;
+            color: #1e40af;
+            font-size: 14px;
+        }
+        .analysis-section p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -101,21 +132,6 @@
 
         <!-- 右侧：操作面板 -->
         <div class="control-panel">
-            <div class="section">
-                <h3>技术指标</h3>
-                <label><input type="checkbox" checked onchange="toggleSeries('MA7')"> MA7</label>
-                <label><input type="checkbox" checked onchange="toggleSeries('MA30')"> MA30</label>
-                <label><input type="checkbox" checked onchange="toggleSeries('BOLL')"> BOLL</label>
-            </div>
-
-            <div class="section">
-                <h3>量化分析与策略</h3>
-                <div id="analysis-report">{{ analysis|safe }}</div>
-                <button onclick="generateStrategy()" class="btn-strategy">生成交易策略</button>
-                <button onclick="showForecast()" class="btn-forecast">查看未来预测</button>
-                <div id="strategy-result" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; display: none;"></div>
-                <a href="{{ url_for('simulate_trade') }}" class="btn-strategy" style="display: block; text-align: center; margin-top: 10px;">进入模拟交易</a>
-            </div>
             <!-- 持仓信息 -->
             <div class="section">
                 <h3>持仓信息</h3>
@@ -123,10 +139,35 @@
                     <p>加载中...</p>
                 </div>
             </div>
+
+            <!-- 策略展示 -->
+            <div class="section">
+                <button class="btn-strategy" onclick="toggleStrategy()" id="btn-strategy">生成交易策略</button>
+                <div id="strategy-result"></div>
+            </div>
+
+            <!-- 未来预测 -->
+            <div class="section">
+                <button class="btn-forecast" onclick="showForecast()">查看未来预测</button>
+            </div>
+
+            <!-- 模拟交易入口 -->
+            <div class="section">
+                <a href="{{ url_for('simulate_trade') }}" class="btn-simulate">进入模拟交易</a>
+            </div>
         </div>
     </div>
 </div>
 
+<!-- 预测模态框 -->
+<div id="forecast-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeForecastModal()">×</span>
+        <h3>未来5日预测</h3>
+        <div id="forecast-chart" style="height: 400px;"></div>
+        <div id="forecast-table"></div>
+    </div>
+</div>
 
 <script>
 // === 数据准备 ===
@@ -219,16 +260,6 @@ function renderChart() {
     }, true);
 }
 
-// === 开关指标 ===
-function toggleSeries(name) {
-    const checked = event.target.checked;
-    chart.dispatchAction({
-        type: checked ? 'legendSelect' : 'legendUnSelect',
-        name: name
-    });
-}
-
-
 // === 持仓信息 ===
 async function updatePortfolio() {
     try {
@@ -248,110 +279,223 @@ async function updatePortfolio() {
     }
 }
 
-// === 标签页切换 ===
-function openTab(tabName) {
-    const tabContents = document.getElementsByClassName('tab-content');
-    const tabButtons = document.getElementsByClassName('tab-btn');
+// === 策略展开/收起 ===
+let strategyExpanded = false;
 
-    for (let i = 0; i < tabContents.length; i++) {
-        tabContents[i].classList.remove('active');
-        tabButtons[i].classList.remove('active');
+function toggleStrategy() {
+    const resultDiv = document.getElementById('strategy-result');
+    const button = document.getElementById('btn-strategy');
+
+    if (strategyExpanded) {
+        // 收起策略
+        resultDiv.style.display = 'none';
+        button.textContent = '生成交易策略';
+        strategyExpanded = false;
+    } else {
+        // 展开策略
+        getAnalysis();
+        button.textContent = '收起交易策略';
+        strategyExpanded = true;
     }
-
-    document.getElementById(tabName).classList.add('active');
-    event.currentTarget.classList.add('active');
 }
 
-// === 策略和预测功能 ===
-async function generateStrategy() {
+// === 获取策略分析 ===
+async function getAnalysis() {
     try {
         const response = await fetch('/get_analysis');
         const data = await response.json();
-        const strategyDiv = document.getElementById('strategy-result');
-        strategyDiv.innerHTML = data.analysis;
-        strategyDiv.style.display = 'block';
+        renderAnalysis(data.analysis);
     } catch (error) {
-        alert('生成策略失败: ' + error);
+        alert('获取分析失败: ' + error);
     }
 }
 
+// === 渲染策略分析 ===
+function renderAnalysis(analysis) {
+    const resultDiv = document.getElementById('strategy-result');
+    resultDiv.innerHTML = `
+        <div class="analysis-section">
+            <h4>当前分析</h4>
+            <p>${analysis.current_analysis}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>未来策略</h4>
+            <p>${analysis.future_strategy}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>风险评估</h4>
+            <p>${analysis.risk}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>预期回报</h4>
+            <p>${analysis.expected_return.toFixed(2)}%</p>
+        </div>
+    `;
+    resultDiv.style.display = 'block';
+}
+
+// === 获取未来预测 ===
 async function showForecast() {
     try {
+        console.log('开始获取预测数据...');
         const response = await fetch('/get_forecast');
         const data = await response.json();
-        renderForecastChart(data.future_data);
-        renderForecastTable(data.future_data);
-        document.getElementById('forecast-modal').style.display = 'block';
+        console.log('获取到的预测数据:', data);
+
+        if (data.future_data && data.future_data.length > 0) {
+            renderForecastChart(data.future_data);
+            renderForecastTable(data.future_data);
+            document.getElementById('forecast-modal').style.display = 'block';
+        } else {
+            alert('没有获取到预测数据');
+        }
     } catch (error) {
+        console.error('获取预测失败:', error);
         alert('获取预测失败: ' + error);
     }
 }
 
 function renderForecastChart(forecastData) {
-    const forecastChart = echarts.init(document.getElementById('forecast-chart'));
-    const dates = forecastData.map(d => d.date);
-    const yhat = forecastData.map(d => d.yhat);
-    const yhatLower = forecastData.map(d => d.yhat_lower);
-    const yhatUpper = forecastData.map(d => d.yhat_upper);
+    console.log('渲染预测图表，数据:', forecastData);
 
-    forecastChart.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { data: ['预测价格', '置信区间'] },
-        xAxis: { type: 'category', data: dates },
-        yAxis: { type: 'value' },
+    const forecastChart = echarts.init(document.getElementById('forecast-chart'));
+
+    // 确保数据格式正确
+    const dates = forecastData.map(d => {
+        // 处理日期格式，确保是字符串格式
+        if (d.date instanceof Date) {
+            return d.date.toISOString().split('T')[0];
+        }
+        return d.date.split(' ')[0]; // 去掉时间部分，只保留日期
+    });
+
+    const yhat = forecastData.map(d => parseFloat(d.yhat) || 0);
+    const yhatLower = forecastData.map(d => parseFloat(d.yhat_lower) || 0);
+    const yhatUpper = forecastData.map(d => parseFloat(d.yhat_upper) || 0);
+
+    console.log('处理后的数据 - 日期:', dates);
+    console.log('处理后的数据 - 预测值:', yhat);
+
+    const option = {
+        title: {
+            text: '沪深300未来5日价格预测',
+            left: 'center'
+        },
+        tooltip: {
+            trigger: 'axis',
+            formatter: function(params) {
+                let result = params[0].name + '<br/>';
+                params.forEach(param => {
+                    result += `${param.seriesName}: ${param.value.toFixed(2)}<br/>`;
+                });
+                return result;
+            }
+        },
+        legend: {
+            data: ['预测价格', '置信区间'],
+            top: '10%'
+        },
+        xAxis: {
+            type: 'category',
+            data: dates,
+            axisLabel: {
+                rotate: 45
+            }
+        },
+        yAxis: {
+            type: 'value',
+            name: '价格',
+            scale: true
+        },
+        grid: {
+            top: '20%',
+            bottom: '15%'
+        },
         series: [
             {
                 name: '预测价格',
                 type: 'line',
                 data: yhat,
-                lineStyle: { color: '#1890ff' },
-                itemStyle: { color: '#1890ff' }
+                lineStyle: {
+                    color: '#1890ff',
+                    width: 3
+                },
+                itemStyle: {
+                    color: '#1890ff'
+                },
+                symbol: 'circle',
+                symbolSize: 6
             },
             {
                 name: '置信区间',
                 type: 'line',
                 data: yhatUpper,
-                lineStyle: { opacity: 0 },
+                lineStyle: {
+                    opacity: 0.5,
+                    color: '#91cc75'
+                },
                 areaStyle: {
-                    color: 'rgba(24, 144, 255, 0.3)'
-                }
+                    color: 'rgba(144, 238, 144, 0.3)'
+                },
+                symbol: 'none',
+                smooth: true
             },
             {
                 name: '置信区间',
                 type: 'line',
                 data: yhatLower,
-                lineStyle: { opacity: 0 },
+                lineStyle: {
+                    opacity: 0.5,
+                    color: '#91cc75'
+                },
                 areaStyle: {
-                    color: 'rgba(24, 144, 255, 0.3)'
-                }
+                    color: 'rgba(144, 238, 144, 0.3)'
+                },
+                symbol: 'none',
+                smooth: true
             }
         ]
-    });
+    };
+
+    forecastChart.setOption(option);
+
+    // 确保图表正确渲染
+    setTimeout(() => {
+        forecastChart.resize();
+    }, 100);
 }
 
 function renderForecastTable(forecastData) {
+    console.log('渲染预测表格，数据:', forecastData);
+
     let tableHtml = `
-        <table style="width:100%; border-collapse: collapse; margin-top: 20px;">
-            <tr style="background: #1e40af; color: white;">
-                <th style="padding: 10px; text-align: left;">日期</th>
-                <th style="padding: 10px; text-align: left;">预测价格</th>
-                <th style="padding: 10px; text-align: left;">置信下限</th>
-                <th style="padding: 10px; text-align: left;">置信上限</th>
-            </tr>
+        <div style="margin-top: 20px;">
+            <h4>详细预测数据</h4>
+            <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
+                <tr style="background: #1e40af; color: white;">
+                    <th style="padding: 10px; text-align: left;">日期</th>
+                    <th style="padding: 10px; text-align: left;">预测价格</th>
+                    <th style="padding: 10px; text-align: left;">置信下限</th>
+                    <th style="padding: 10px; text-align: left;">置信上限</th>
+                </tr>
     `;
 
     forecastData.forEach(item => {
+        const dateStr = item.date instanceof Date ?
+            item.date.toISOString().split('T')[0] :
+            item.date.split(' ')[0];
+
         tableHtml += `
             <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;">${item.date}</td>
-                <td style="padding: 10px; color: #1890ff; font-weight: bold;">${item.yhat.toFixed(2)}</td>
-                <td style="padding: 10px; color: #52c41a;">${item.yhat_lower.toFixed(2)}</td>
-                <td style="padding: 10px; color: #f5222d;">${item.yhat_upper.toFixed(2)}</td>
+                <td style="padding: 10px;">${dateStr}</td>
+                <td style="padding: 10px; color: #1890ff; font-weight: bold;">${parseFloat(item.yhat).toFixed(2)}</td>
+                <td style="padding: 10px; color: #52c41a;">${parseFloat(item.yhat_lower).toFixed(2)}</td>
+                <td style="padding: 10px; color: #f5222d;">${parseFloat(item.yhat_upper).toFixed(2)}</td>
             </tr>
         `;
     });
 
-    tableHtml += '</table>';
+    tableHtml += '</table></div>';
     document.getElementById('forecast-table').innerHTML = tableHtml;
 }
 

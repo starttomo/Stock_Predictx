@@ -26,7 +26,14 @@ def add_indicators(df):
     df['upper'] = df['mid'] + 2 * std
     df['lower'] = df['mid'] - 2 * std
 
-    return df
+    # 添加MACD（修复KeyError）
+    exp1 = close.ewm(span=12).mean()
+    exp2 = close.ewm(span=26).mean()
+    df['macd'] = exp1 - exp2
+    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+
+    # 填充NaN（避免后续计算问题）
+    return df.ffill().bfill().fillna(0)
 
 def simulate_order(df, order_date, close_date, price, stop_loss, take_profit):
     """基于历史数据模拟挂单和触发"""
@@ -53,5 +60,5 @@ def simulate_order(df, order_date, close_date, price, stop_loss, take_profit):
         'dates': period_df['date'].dt.strftime('%Y-%m-%d').tolist(),
         'prices': period_df['close'].tolist()
     }
-    
+
     return True, (chart_data, sell_date, sell_price)

@@ -20,7 +20,7 @@
         .tab-content.active { display: block; }
 
         .trade-form { display: flex; gap: 10px; flex-wrap: wrap; }
-        .trade-form input { flex: 1; min-width: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; }
+        .trade-form input, .trade-form select { flex: 1; min-width: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; }
         .trade-form { display: flex; gap: 10px; flex-wrap: wrap; }
         .btn-submit { background: #1e40af; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; width: 100%; }
         .btn-submit:hover { background: #1e3a8a; }
@@ -69,6 +69,67 @@
         }
         .success-message { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
         .error-message { background: #fee2e2; color: #dc2626; border: 1px solid #ef4444; }
+
+        /* 新增样式 */
+        .date-input-wrapper {
+            position: relative;
+            flex: 1;
+            min-width: 100px;
+        }
+        .date-input-wrapper input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .date-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
+            max-height: 150px;
+            overflow-y: auto;
+            z-index: 10;
+            display: none;
+        }
+        .date-suggestion {
+            padding: 8px;
+            cursor: pointer;
+        }
+        .date-suggestion:hover {
+            background: #f1f5f9;
+        }
+
+        /* 策略结果样式 */
+        #predict-guide-result {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .analysis-section {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .analysis-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        .analysis-section h4 {
+            margin: 0 0 8px 0;
+            color: #1e40af;
+            font-size: 14px;
+        }
+        .analysis-section p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -91,8 +152,14 @@
         <div class="control-panel">
             <div class="section">
                 <h3>预测指导</h3>
-                <input type="date" id="predict-start-date" placeholder="起始日期">
-                <input type="date" id="predict-end-date" placeholder="结束日期">
+                <div class="date-input-wrapper">
+                    <input type="date" id="predict-start-date" placeholder="选择起始日期">
+                    <div class="date-suggestions" id="predict-start-suggestions"></div>
+                </div>
+                <div class="date-input-wrapper">
+                    <input type="date" id="predict-end-date" placeholder="选择结束日期">
+                    <div class="date-suggestions" id="predict-end-suggestions"></div>
+                </div>
                 <button onclick="getPredictGuide()" class="btn-strategy">获取预测指导</button>
                 <div id="predict-guide-result" style="margin-top: 10px;"></div>
             </div>
@@ -107,13 +174,26 @@
                     <option value="market">市价</option>
                     <option value="limit">限价</option>
                 </select>
-                <input type="date" id="order-date" placeholder="挂单日期">
+                <div class="date-input-wrapper">
+                    <input type="date" id="order-date" placeholder="选择挂单日期">
+                    <div class="date-suggestions" id="order-date-suggestions"></div>
+                </div>
                 <input type="number" id="order-price" placeholder="价格 (限价必填)" step="0.01">
                 <input type="number" id="order-quantity" placeholder="股数" min="100" step="100">
                 <input type="number" id="stop-loss" placeholder="止损价格 (可选)" step="0.01">
                 <input type="number" id="take-profit" placeholder="止盈价格 (可选)" step="0.01">
-                <input type="date" id="close-date" placeholder="平仓日期 (可选)">
+                <div class="date-input-wrapper">
+                    <input type="date" id="close-date" placeholder="选择平仓日期 (可选)">
+                    <div class="date-suggestions" id="close-date-suggestions"></div>
+                </div>
                 <button onclick="submitOrder()" class="btn-submit">开始交易</button>
+            </div>
+
+            <!-- 添加策略生成部分 -->
+            <div class="section">
+                <h3>策略分析</h3>
+                <button onclick="getAnalysis()" class="btn-strategy">生成交易策略</button>
+                <div id="analysis-result" style="margin-top: 10px;"></div>
             </div>
         </div>
     </div>
@@ -142,6 +222,9 @@ let data = rawData.map(d => ({
     lower: d.lower ? parseFloat(d.lower) : null
 }));
 
+// 提取所有有效日期
+const validDates = [...new Set(data.map(d => d.date.toISOString().split('T')[0]))].sort();
+
 // === 时间框架设置 ===
 const timeframe = 'day'; // 设置为日线图
 
@@ -151,8 +234,85 @@ let chart;
 // === 页面加载完成后初始化 ===
 document.addEventListener('DOMContentLoaded', function() {
     chart = echarts.init(document.getElementById('chart'));
+    setupDateInputs();
     renderChart();
 });
+
+// === 设置日期输入框 ===
+function setupDateInputs() {
+    // 为所有日期输入框添加事件监听
+    const dateInputs = [
+        { input: 'predict-start-date', suggestions: 'predict-start-suggestions' },
+        { input: 'predict-end-date', suggestions: 'predict-end-suggestions' },
+        { input: 'order-date', suggestions: 'order-date-suggestions' },
+        { input: 'close-date', suggestions: 'close-date-suggestions' }
+    ];
+
+    dateInputs.forEach(item => {
+        const input = document.getElementById(item.input);
+        const suggestions = document.getElementById(item.suggestions);
+
+        // 输入时显示建议
+        input.addEventListener('input', function() {
+            showDateSuggestions(this.value, suggestions);
+        });
+
+        // 点击输入框时显示所有建议
+        input.addEventListener('focus', function() {
+            showDateSuggestions(this.value, suggestions);
+        });
+
+        // 点击外部时隐藏建议
+        document.addEventListener('click', function(e) {
+            if (e.target !== input && !suggestions.contains(e.target)) {
+                suggestions.style.display = 'none';
+            }
+        });
+    });
+}
+
+// === 显示日期建议 ===
+function showDateSuggestions(inputValue, suggestionsElement) {
+    suggestionsElement.innerHTML = '';
+
+    if (!inputValue) {
+        // 如果没有输入值，显示所有日期
+        validDates.forEach(date => {
+            const div = document.createElement('div');
+            div.className = 'date-suggestion';
+            div.textContent = date;
+            div.onclick = function() {
+                suggestionsElement.previousElementSibling.value = date;
+                suggestionsElement.style.display = 'none';
+            };
+            suggestionsElement.appendChild(div);
+        });
+    } else {
+        // 根据输入值过滤日期
+        const filteredDates = validDates.filter(date => date.includes(inputValue));
+        filteredDates.forEach(date => {
+            const div = document.createElement('div');
+            div.className = 'date-suggestion';
+            div.textContent = date;
+            div.onclick = function() {
+                suggestionsElement.previousElementSibling.value = date;
+                suggestionsElement.style.display = 'none';
+            };
+            suggestionsElement.appendChild(div);
+        });
+    }
+
+    if (suggestionsElement.children.length > 0) {
+        suggestionsElement.style.display = 'block';
+    } else {
+        suggestionsElement.style.display = 'none';
+    }
+}
+
+// === 验证日期是否有效 ===
+function isValidDate(dateString) {
+    return validDates.includes(dateString);
+}
 
 // === 渲染图表 ===
 function renderChart() {
@@ -222,6 +382,40 @@ function renderChart() {
     }, true);
 }
 
+// === 获取策略分析 ===
+async function getAnalysis() {
+    try {
+        const response = await fetch('/get_analysis');
+        const data = await response.json();
+        renderAnalysis(data.analysis);
+    } catch (error) {
+        alert('获取分析失败: ' + error);
+    }
+}
+
+// === 渲染策略分析 ===
+function renderAnalysis(analysis) {
+    const resultDiv = document.getElementById('analysis-result');
+    resultDiv.innerHTML = `
+        <div class="analysis-section">
+            <h4>当前分析</h4>
+            <p>${analysis.current_analysis}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>未来策略</h4>
+            <p>${analysis.future_strategy}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>风险评估</h4>
+            <p>${analysis.risk}</p>
+        </div>
+        <div class="analysis-section">
+            <h4>预期回报</h4>
+            <p>${analysis.expected_return.toFixed(2)}%</p>
+        </div>
+    `;
+}
+
 // === 预测指导函数 - 添加错误处理 ===
 async function getPredictGuide() {
     try {
@@ -231,24 +425,30 @@ async function getPredictGuide() {
             alert('请选择起始和结束日期');
             return;
         }
-        
+
+        // 验证日期是否有效
+        if (!isValidDate(start) || !isValidDate(end)) {
+            alert('当前日期未开盘');
+            return;
+        }
+
         const response = await fetch('/predict_guide', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ start, end })
         });
-        
+
         const result = await response.json();
-        
+
         if (result.success) {
             document.getElementById('predict-guide-result').innerHTML = result.guide;
         } else {
-            document.getElementById('predict-guide-result').innerHTML = 
+            document.getElementById('predict-guide-result').innerHTML =
                 `<div class="error-message">${result.message}</div>`;
         }
     } catch (error) {
         console.error('获取预测指导失败:', error);
-        document.getElementById('predict-guide-result').innerHTML = 
+        document.getElementById('predict-guide-result').innerHTML =
             `<div class="error-message">网络错误，请重试</div>`;
     }
 }
@@ -270,23 +470,29 @@ async function submitOrder() {
             return;
         }
 
+        // 验证日期是否有效
+        if (!isValidDate(date)) {
+            alert('当前日期未开盘');
+            return;
+        }
+
         const response = await fetch('/simulate_order', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                side, 
-                type, 
-                date, 
-                price, 
-                quantity, 
-                stopLoss, 
-                takeProfit, 
-                closeDate 
+            body: JSON.stringify({
+                side,
+                type,
+                date,
+                price,
+                quantity,
+                stopLoss,
+                takeProfit,
+                closeDate
             })
         });
-        
+
         const result = await response.json();
-        
+
         if (result.success) {
             showTradeResult(result.chart_data, result.buy_point, result.sell_point, result.info);
         } else {
@@ -302,26 +508,26 @@ async function submitOrder() {
 function showTradeResult(chartData, buyPoint, sellPoint, info) {
     document.getElementById('trade-result-modal').style.display = 'block';
     const tradeChart = echarts.init(document.getElementById('trade-chart'));
-    
+
     // 确保买卖点坐标格式正确
     const markPointData = [];
     if (buyPoint && buyPoint.length === 2) {
-        markPointData.push({ 
-            name: '买点', 
-            coord: buyPoint, 
+        markPointData.push({
+            name: '买点',
+            coord: buyPoint,
             itemStyle: { color: 'green' },
             symbolSize: 20
         });
     }
     if (sellPoint && sellPoint.length === 2) {
-        markPointData.push({ 
-            name: '卖点', 
-            coord: sellPoint, 
+        markPointData.push({
+            name: '卖点',
+            coord: sellPoint,
             itemStyle: { color: 'red' },
             symbolSize: 20
         });
     }
-    
+
     tradeChart.setOption({
         title: {
             text: '交易走势图',
@@ -330,12 +536,12 @@ function showTradeResult(chartData, buyPoint, sellPoint, info) {
         tooltip: {
             trigger: 'axis'
         },
-        xAxis: { 
-            type: 'category', 
+        xAxis: {
+            type: 'category',
             data: chartData.dates,
             name: '日期'
         },
-        yAxis: { 
+        yAxis: {
             type: 'value',
             name: '价格'
         },
@@ -360,7 +566,7 @@ function showTradeResult(chartData, buyPoint, sellPoint, info) {
             }
         }]
     });
-    
+
     document.getElementById('trade-info').innerHTML = `
         <h4>交易详情</h4>
         <p><strong>开单日期:</strong> ${info.buy_date || 'N/A'}</p>

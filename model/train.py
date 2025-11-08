@@ -11,58 +11,66 @@ from datetime import datetime, timedelta
 import joblib
 import os
 
-def create_features(df):
-    """创建更多技术指标作为特征"""
-    close = df['close']
+# 计算机原理：LSTM通过门控机制捕捉时间序列长期依赖（Hochreiter & Schmidhuber, 1997）。
+# 多步预测用自回归更新所有特征，避免误差累积（参考arXiv 2020 "Stock Price Prediction Using Machine Learning and LSTM"）。
 
-    # 价格特征
-    df['returns'] = close.pct_change()
-    df['log_returns'] = np.log(close / close.shift(1))
+def create_features(df, is_predict=False):
+        close = df['close']
 
-    # 移动平均线
-    for window in [5, 10, 20, 30, 60]:
-        df[f'ma{window}'] = close.rolling(window).mean()
-        df[f'ma_ratio_{window}'] = close / df[f'ma{window}']
+        # 价格特征
+        df['returns'] = close.pct_change()
+        df['log_returns'] = np.log(close / close.shift(1))
 
-    # 波动率
-    df['volatility_5'] = df['returns'].rolling(5).std()
-    df['volatility_20'] = df['returns'].rolling(20).std()
+        # 移动平均线 - 预测时用min(window, len(df))避免NaN
+        for window in [5, 10, 20, 30, 60]:
+            roll_win = min(window, len(df)) if is_predict else window
+            df[f'ma{window}'] = close.rolling(roll_win).mean()
+            df[f'ma_ratio_{window}'] = close / df[f'ma{window}']
 
-    # 动量指标
-    df['momentum_5'] = close / close.shift(5) - 1
-    df['momentum_10'] = close / close.shift(10) - 1
+        # 波动率 - 同上
+        df['volatility_5'] = df['returns'].rolling(min(5, len(df))).std()
+        df['volatility_20'] = df['returns'].rolling(min(20, len(df))).std()
 
-    # 布林带
-    df['bb_middle'] = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
-    df['bb_upper'] = df['bb_middle'] + 2 * bb_std
-    df['bb_lower'] = df['bb_middle'] - 2 * bb_std
-    df['bb_position'] = (close - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        # 动量指标
+        df['momentum_5'] = close / close.shift(5) - 1
+        df['momentum_10'] = close / close.shift(10) - 1
 
-    # RSI
-    delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+        # 布林带
+        df['bb_middle'] = close.rolling(min(20, len(df))).mean()
+        bb_std = close.rolling(min(20, len(df))).std()
+        df['bb_upper'] = df['bb_middle'] + 2 * bb_std
+        df['bb_lower'] = df['bb_middle'] - 2 * bb_std
+        df['bb_position'] = (close - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
 
-    # MACD
-    exp1 = close.ewm(span=12).mean()
-    exp2 = close.ewm(span=26).mean()
-    df['macd'] = exp1 - exp2
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+        # RSI
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(min(14, len(df))).mean()
+        loss = -delta.where(delta < 0, 0).rolling(min(14, len(df))).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-    # 成交量特征
-    df['volume_ma'] = df['volume'].rolling(20).mean()
-    df['volume_ratio'] = df['volume'] / df['volume_ma']
+        # MACD - ewm不需window调整，但初始NaN少
+        exp1 = close.ewm(span=12).mean()
+        exp2 = close.ewm(span=26).mean()
+        df['macd'] = exp1 - exp2
+        df['macd_signal'] = df['macd'].ewm(span=9).mean()
 
-    # 价格位置特征
-    df['high_52'] = close.rolling(252).max()
-    df['low_52'] = close.rolling(252).min()
-    df['price_position'] = (close - df['low_52']) / (df['high_52'] - df['low_52'])
+        # 成交量特征
+        df['volume_ma'] = df['volume'].rolling(min(20, len(df))).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_ma']
 
-    return df.dropna()
+        # 价格位置特征
+        if not is_predict:
+            df['high_52'] = close.rolling(252).max()
+            df['low_52'] = close.rolling(252).min()
+            df['price_position'] = (close - df['low_52']) / (df['high_52'] - df['low_52'])
+        else:
+            df['high_52'] = close.max()
+            df['low_52'] = close.min()
+            df['price_position'] = (close - df['low_52']) / (df['high_52'] - df['low_52'])
 
+        # 强制填充所有NaN，不dropna
+        return df.ffill().bfill().fillna(0)
 def prepare_sequences_multivariate(df, seq_len, target_col='close'):
     """准备多变量序列数据，使用所有可用特征"""
     # 动态获取特征列（除 'date'）
@@ -82,21 +90,24 @@ def train_and_forecast_improved():
 
     # 获取数据并创建特征
     df = get_hs300_data()
+    df['date'] = pd.to_datetime(df['date'])  # 确保date是datetime
+    df = df[df['date'] > '2020-01-01'].reset_index(drop=True)  # 限近期数据，避免历史低价
+    print(f"过滤后数据行数: {len(df)}")
+
     df = create_features(df)
     print(f"特征工程完成，特征数量: {len([col for col in df.columns if col != 'date'])}")
 
-    # 数据标准化（先缩放所有特征，包括 close）
+    # 数据标准化
     feature_cols = [col for col in df.columns if col != 'date']
     scaler_X = MinMaxScaler()
     data_scaled = scaler_X.fit_transform(df[feature_cols])
     scaled_df = pd.DataFrame(data_scaled, columns=feature_cols, index=df.index)
     scaled_df['date'] = df['date']
 
-    # 单独的 scaler_y 只用于 close（便于反缩放预测）
     scaler_y = MinMaxScaler()
-    scaler_y.fit(df[['close']])  # 只 fit 原始 close
+    scaler_y.fit(df[['close']])  # fit 原 close
 
-    # 准备序列数据（使用缩放后的 df）
+    # 准备序列
     seq_len = 60
     X, y = prepare_sequences_multivariate(scaled_df, seq_len)
 
@@ -104,24 +115,24 @@ def train_and_forecast_improved():
         print("错误：没有足够的数据生成序列")
         return
 
-    print(f"数据形状: X={X.shape}, y={y.shape}")  # y 现在是缩放后的 close
+    print(f"数据形状: X={X.shape}, y={y.shape}")
 
-    # 分割数据
+    # 分割
     split = int(0.8 * len(X))
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
 
-    # 创建改进的LSTM模型
-    input_size = X.shape[2]  # 现在是所有特征的数量（33）
+    # 模型
+    input_size = X.shape[2]
     model = ImprovedLSTMModel(input_size=input_size, hidden_size=100, num_layers=3, output_size=1)
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)  # 调整lr
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
 
     # 训练
     best_loss = float('inf')
-    patience = 20
+    patience = 50  # 增大
     patience_counter = 0
 
     for epoch in range(200):
@@ -170,9 +181,10 @@ def train_and_forecast_improved():
     joblib.dump(scaler_X, 'model/scaler_X.pkl')
     joblib.dump(scaler_y, 'model/scaler_y.pkl')
 
-    # 预测未来
+    # 预测未来 - 改进：完整更新所有特征
     model.eval()
     last_sequence = X[-1:].copy()  # 缩放后的最后序列 (1, 60, num_features)
+    last_df = df.tail(252).copy()  # 增大历史，避NaN
 
     future_dates = []
     future_preds = []
@@ -195,19 +207,32 @@ def train_and_forecast_improved():
             future_preds.append(pred_price)
             future_dates.append(next_date)
 
-            # 更新序列：移位，并用新 pred_scaled 更新 'close' 位置（假设 'close' 是 feature_cols[0]）
-            # 其他特征保持最后一行值（简化；实际可重新计算部分如 returns）
-            new_row = temp_sequence[0, -1, :].copy()  # 复制最后一行
-            new_row[0] = pred_scaled  # 更新 close（假设索引 0 是 close）
-            temp_sequence = np.roll(temp_sequence, -1, axis=1)  # 移位
-            temp_sequence[0, -1, :] = new_row  # 添加新行
+            # 更新原始df：添加新行（close=pred_price，其他如volume用最后均值简化）
+            new_row = last_df.iloc[-1].copy()
+            new_row['date'] = next_date
+            new_row['close'] = pred_price
+            new_row['open'] = pred_price  # 简化
+            new_row['high'] = pred_price * 1.01
+            new_row['low'] = pred_price * 0.99
+            new_row['volume'] = last_df['volume'].mean()  # 均值填充
+
+            last_df = pd.concat([last_df, pd.DataFrame([new_row])], ignore_index=True)
+            last_df = create_features(last_df, is_predict=True).tail(seq_len)  # 修复is_predict=True
+
+            # 缩放新序列 - 加try防空
+            try:
+                new_scaled = scaler_X.transform(last_df[feature_cols])
+                temp_sequence[0] = new_scaled  # 更新序列
+            except ValueError:
+                print("警告: 序列空，使用最后序列")
+                pred_price = df['close'].mean()  # fallback
 
             current_date = next_date
 
     # 存入数据库
     for date, pred in zip(future_dates, future_preds):
         uncertainty = pred * 0.03  # 3%的不确定性
-        f = Forecast.query.get(date.date())
+        f = db.session.get(Forecast, date.date())  # 修复legacy
         if not f:
             f = Forecast(
                 date=date.date(),
