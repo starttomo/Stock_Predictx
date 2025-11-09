@@ -189,100 +189,40 @@ def index():
 def simulate_trade():
     df = get_hs300_data()
     df = add_indicators(df)
+    df['date'] = df['date'].dt.strftime('%Y-%m-%d')
     return render_template('simulate_trade.html', data=df.to_dict(orient='records'))
 
 
 @app.route('/simulate_order', methods=['POST'])
 @login_required
-def simulate_order_route():  # 重命名函数避免冲突
+def simulate_order_route():
     try:
         data = request.json
         side = data.get('side')
         order_type = data.get('type')
         order_date = data.get('date')
         price = float(data.get('price')) if data.get('price') else None
-        quantity = int(data.get('quantity'))
+        quantity = data.get('quantity')
         stop_loss = float(data.get('stopLoss')) if data.get('stopLoss') else None
         take_profit = float(data.get('takeProfit')) if data.get('takeProfit') else None
         close_date = data.get('closeDate')
 
-        if not order_date:
-            return jsonify(success=False, message="请选择挂单日期")
-
         df = get_hs300_data()
-
-        # 检查买入卖出逻辑
+        # 买入
         if side == 'buy':
-            # 买入逻辑
-            if current_user.holding_quantity > 0:
-                return jsonify(success=False, message="您已有持仓，请先卖出再买入")
-
-            # 如果未选择平仓日期，则显示从买入到当前时间的走势
-            if not close_date:
-                close_date = datetime.now().strftime('%Y-%m-%d')
-                is_simulation_only = True  # 仅模拟，不保存到数据库
-            else:
-                is_simulation_only = False
-
-        elif side == 'sell':
-            # 卖出逻辑
-            if current_user.holding_quantity <= 0:
-                return jsonify(success=False, message="您没有持仓，无法卖出")
-
-            if not close_date:
-                return jsonify(success=False, message="卖出必须选择平仓日期")
-
-            # 检查卖出日期是否在买入日期之后
-            latest_trade = Trade.query.filter_by(user_id=current_user.id, sell_price=None).order_by(Trade.buy_date.desc()).first()
-            if latest_trade and pd.to_datetime(close_date) <= latest_trade.buy_date:
-                return jsonify(success=False, message="卖出日期必须在买入日期之后")
-
-            is_simulation_only = False
-        else:
-            return jsonify(success=False, message="无效的交易方向")
-
-        # 调用正确的simulate_order函数
-        success, result = simulate_order(df, order_date, close_date, price, stop_loss, take_profit)
-
-        if not success:
-            return jsonify(success=False, message=result)
-
-        # 解析返回结果
-        chart_data, sell_date, sell_price = result
-
-        # 计算盈亏
-        buy_price = price or df[df['date'] == pd.to_datetime(order_date)]['close'].iloc[0]
-        profit = (sell_price - buy_price) * quantity
-        profit_rate = (profit / (buy_price * quantity)) * 100
-
-        # 如果是买入且仅模拟（未选择平仓日期），则不保存到数据库
-        if side == 'buy' and is_simulation_only:
-            info = {
-                'buy_date': order_date,
-                'quantity': quantity,
-                'buy_price': buy_price,
-                'sell_date': '持仓中',
-                'sell_price': '--',
-                'profit': '--',
-                'profit_rate': '--',
-                'is_simulation': True
-            }
-
-            return jsonify(success=True,
-                          chart_data=chart_data,
-                          buy_point=[0, float(buy_price)],
-                          sell_point=None,
-                          info=info)
-
-        # 将交易记录保存到数据库
-        if side == 'buy':
-            # 买入操作
-            trade = Trade(
-                user_id=current_user.id,
+            if not quantity or int(quantity) <= 0:
+                return jsonify(success=False, message="请填写有效股数")
+            quantity = int(quantity)
+            buy_price = price or df[df['date'] == order_date]['close'].iloc[0]
+            total_cost = buy_price * quantity
+            if current_user.cash < Decimal(str(total_cost)):
+                return jsonify(success=False, message="账户现金不足，无法完成买入")
+            # 允许多持仓，不限持仓数
+            trade = Trade(user_id=current_user.id,
                 buy_date=pd.to_datetime(order_date),
                 buy_price=Decimal(str(buy_price)),
                 quantity=quantity,
-                sell_date=None,  # 买入时卖出日期为空
+                sell_date=None,
                 sell_price=None,
                 profit=None,
                 profit_rate=None,
@@ -291,48 +231,59 @@ def simulate_order_route():  # 重命名函数避免冲突
                 side=side
             )
             db.session.add(trade)
-
-            # 更新用户持仓和现金
             current_user.holding_quantity += quantity
-            current_user.cash -= Decimal(str(buy_price * quantity))
-
+            current_user.cash -= Decimal(str(total_cost))
+            db.session.commit()
+            info = {
+                'buy_date': order_date,
+                'quantity': quantity,
+                'buy_price': buy_price,
+                'sell_date': '持仓中',
+                'sell_price': '--',
+                'profit': '--',
+                'profit_rate': '--',
+                'is_simulation': False
+            }
+            return jsonify(success=True, chart_data={}, buy_point=[0, float(buy_price)], sell_point=None, info=info)
+        # 卖出
         elif side == 'sell':
-            # 卖出操作 - 更新现有的持仓记录
-            latest_trade = Trade.query.filter_by(user_id=current_user.id, sell_price=None).order_by(Trade.buy_date.desc()).first()
-            if latest_trade:
-                latest_trade.sell_date = pd.to_datetime(sell_date)
-                latest_trade.sell_price = Decimal(str(sell_price))
-                latest_trade.profit = Decimal(str(profit))
-                latest_trade.profit_rate = Decimal(str(profit_rate))
+            # 取最早未卖出持仓
+            trades = Trade.query.filter_by(user_id=current_user.id, sell_price=None, status='filled').order_by(Trade.buy_date).all()
+            if not trades or len(trades) == 0:
+                return jsonify(success=False, message="没有可卖出的持仓记录")
+            latest_trade = trades[0]
 
-                # 更新用户持仓和现金
-                current_user.holding_quantity -= quantity
-                current_user.cash += Decimal(str(sell_price * quantity))
+            if not close_date:
+                return jsonify(success=False, message="请设置卖出日期")
+            sell_price = price or df[df['date'] == close_date]['close'].iloc[0]
+            profit = (sell_price - float(latest_trade.buy_price)) * latest_trade.quantity
+            denominator = float(latest_trade.buy_price) * latest_trade.quantity
+            profit_rate = (profit / denominator) * 100 if denominator != 0 else 0
 
-        # 更新用户总资产和收益
-        current_user.current_value = current_user.cash + Decimal(str(current_user.holding_quantity * float(df['close'].iloc[-1])))
-        current_user.profit = current_user.current_value - current_user.total_invest
-        current_user.profit_rate = float((current_user.profit / current_user.total_invest) * 100) if current_user.total_invest > 0 else 0
-
-        db.session.commit()
-
-        info = {
-            'buy_date': order_date,
-            'quantity': quantity,
-            'buy_price': buy_price,
-            'sell_date': sell_date.strftime('%Y-%m-%d'),
-            'sell_price': sell_price,
-            'profit': profit,
-            'profit_rate': profit_rate,
-            'is_simulation': False
-        }
-
-        return jsonify(success=True,
-                      chart_data=chart_data,
-                      buy_point=[0, float(buy_price)],
-                      sell_point=[len(chart_data['dates']) - 1, float(sell_price)],
-                      info=info)
-
+            latest_trade.sell_date = pd.to_datetime(close_date)
+            latest_trade.sell_price = Decimal(str(sell_price))
+            latest_trade.profit = Decimal(str(profit))
+            latest_trade.profit_rate = Decimal(str(profit_rate))
+            current_user.holding_quantity -= latest_trade.quantity if current_user.holding_quantity >= latest_trade.quantity else 0
+            current_user.cash += Decimal(str(sell_price * latest_trade.quantity))
+            db.session.commit()
+            info = {
+                'buy_date': latest_trade.buy_date.strftime('%Y-%m-%d'),
+                'quantity': latest_trade.quantity,
+                'buy_price': float(latest_trade.buy_price),
+                'sell_date': close_date,
+                'sell_price': float(latest_trade.sell_price),
+                'profit': float(latest_trade.profit),
+                'profit_rate': float(latest_trade.profit_rate),
+                'is_simulation': False
+            }
+            chart_data = {
+                'dates': [latest_trade.buy_date.strftime('%Y-%m-%d'), close_date],
+                'prices': [float(latest_trade.buy_price), float(sell_price)]
+            }
+            return jsonify(success=True, chart_data=chart_data, buy_point=[0, float(latest_trade.buy_price)], sell_point=[1, float(sell_price)], info=info)
+        else:
+            return jsonify(success=False, message="无效的交易方向")
     except Exception as e:
         return jsonify(success=False, message=f"模拟交易失败: {str(e)}")
 
