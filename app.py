@@ -6,7 +6,7 @@ from data.loader import get_hs300_data
 from utils.indicators import add_indicators, simulate_order  # 添加simulate_order导入
 from datetime import datetime
 import pandas as pd
-from predict import predict_future, create_features, prepare_sequences_multivariate
+from predict import create_features,predict_future,prepare_sequences_multivariate
 from  analysis.strategy import generate_strategy
 from decimal import Decimal
 from utils.trade_engine import TradeEngine

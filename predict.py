@@ -172,6 +172,25 @@ def predict_future(target_date=None):
                 break
             current_date = next_date
 
+        # 存入数据库
+    for date, pred in zip(future_dates, future_preds):
+        uncertainty = pred * 0.03  # 3%的不确定性
+        f = db.session.get(Forecast, date.date())  # 修复legacy
+        if not f:
+            f = Forecast(
+                date=date.date(),
+                yhat=pred,
+                yhat_lower=pred - uncertainty,
+                yhat_upper=pred + uncertainty
+            )
+            db.session.add(f)
+        else:
+            f.yhat = pred
+            f.yhat_lower = pred - uncertainty
+            f.yhat_upper = pred + uncertainty
+
+    db.session.commit()
+
     print("\n未来5日预测结果:")
     print("日期        预测价格    置信区间")
     for date, pred in zip(future_dates, future_preds):
